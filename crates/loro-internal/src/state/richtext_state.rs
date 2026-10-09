@@ -13,7 +13,7 @@ use crate::{
         richtext::{
             config::StyleConfigMap,
             richtext_state::{DrainInfo, EntityRanges, IterRangeItem, PosType, RichtextStateChunk},
-            AnchorType, RichtextState as InnerState, StyleKey, StyleOp, Styles,
+            AnchorType, RichtextState as InnerState, StyleKey, StyleOp, Styles, TextIdRun,
         },
     },
     delta::{StyleMeta, StyleMetaItem},
@@ -146,6 +146,61 @@ impl RichtextState {
         for c in iter {
             callback(c);
         }
+    }
+
+    /// Read the live text of this container as ordered runs of contiguous item
+    /// IDs, without materializing the tree or replaying any history.
+    ///
+    /// Every returned run is derived from an actual internal text chunk, which
+    /// stores one starting [`loro_common::IdFull`] plus a Unicode length. Within
+    /// a chunk the IDs advance by exactly one counter per Unicode scalar (see
+    /// `TextChunk::can_merge`/`split`, which refuse to merge or produce chunks
+    /// whose counters are not contiguous). Adjacent chunks that are contiguous
+    /// in both live-text position and counter are coalesced so the result is
+    /// maximal; style anchors carry no scalars and are skipped.
+    ///
+    /// Both lazy-load states are handled: an unmaterialized snapshot loader
+    /// (`LazyLoad::Src`) and the built tree (`LazyLoad::Dst`).
+    pub(crate) fn get_text_id_runs(&self) -> Vec<TextIdRun> {
+        let mut runs: Vec<TextIdRun> = Vec::new();
+        let mut pos = 0usize;
+        self.iter_raw(&mut |chunk| {
+            let RichtextStateChunk::Text(t) = chunk else {
+                return;
+            };
+            let len = t.len() as usize;
+            if len == 0 {
+                return;
+            }
+
+            let start = t.id();
+            if let Some(last) = runs.last_mut() {
+                if last.start.peer == start.peer
+                    && last.start.counter + last.unicode_len as i32 == start.counter
+                {
+                    last.unicode_len += len;
+                    pos += len;
+                    return;
+                }
+            }
+
+            runs.push(TextIdRun {
+                start,
+                unicode_len: len,
+                unicode_pos: pos,
+            });
+            pos += len;
+        });
+        // Cheap consistency guard for the materialized tree (debug only): the
+        // runs must account for every live scalar the tree tracks.
+        if let LazyLoad::Dst(d) = &self.state {
+            debug_assert_eq!(
+                pos,
+                d.len_unicode(),
+                "text id runs must cover the whole live text"
+            );
+        }
+        runs
     }
 
     fn get_style_start(

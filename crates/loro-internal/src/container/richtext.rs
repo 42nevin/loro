@@ -38,6 +38,26 @@ pub struct RichtextSpan {
     pub attributes: StyleMeta,
 }
 
+/// A maximal run of consecutive live text items that share one peer and a
+/// contiguous counter range.
+///
+/// The `i`-th Unicode scalar of the run, for `i` in `0..unicode_len`, has the
+/// native item ID `(start.peer, start.counter + i)`. `unicode_pos` is the
+/// Unicode scalar offset of the run's first scalar within the current live text.
+///
+/// This is native evidence read from the live text chunks. No interior ID is
+/// inferred from cursor endpoints, replayed history, or serialized spans, and
+/// style anchors contribute no scalars.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextIdRun {
+    /// Native item ID (peer and counter) of the first scalar in the run.
+    pub start: ID,
+    /// Number of Unicode scalars covered by the run; always at least 1.
+    pub unicode_len: usize,
+    /// Unicode scalar offset of the run's first scalar in the live text.
+    pub unicode_pos: usize,
+}
+
 /// This is used to communicate with the frontend.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Style {

@@ -49,6 +49,7 @@ pub use loro_internal::change::Timestamp;
 pub use loro_internal::configure::Configure;
 pub use loro_internal::configure::{StyleConfig, StyleConfigMap};
 pub use loro_internal::container::richtext::ExpandType;
+pub use loro_internal::container::richtext::TextIdRun;
 pub use loro_internal::container::{ContainerID, ContainerType, IntoContainerId};
 pub use loro_internal::cursor;
 pub use loro_internal::delta::{TreeDeltaItem, TreeDiff, TreeDiffItem, TreeExternalDiff};
@@ -2818,6 +2819,44 @@ impl LoroText {
     /// ```
     pub fn get_cursor(&self, pos: usize, side: Side) -> Option<Cursor> {
         self.handler.get_cursor(pos, side)
+    }
+
+    /// Read the live text as ordered runs of contiguous native item IDs.
+    ///
+    /// Each returned run starts at a native item [`ID`] and covers
+    /// `unicode_len` consecutive Unicode scalars whose IDs are
+    /// `(start.peer, start.counter + k)` for `k` in `0..unicode_len`.
+    /// `unicode_pos` is the Unicode scalar offset of the run's first scalar, so
+    /// the runs partition the live text exactly, in order, with no gaps.
+    ///
+    /// Runs are maximal: two adjacent runs never share a peer with contiguous
+    /// counters. Style anchors (marks) carry no scalars and are skipped. The
+    /// result is read from the native text chunks already held by the container
+    /// state, in either lazy-load state, so it does not replay history, does not
+    /// materialize the text tree, and never infers an interior ID from two
+    /// queried endpoints.
+    ///
+    /// This is a read-only observation of the current live state; it observes
+    /// the same identities that [`LoroText::get_cursor`] reports for each scalar.
+    ///
+    /// Returns `None` for a detached container, which has no native container
+    /// and therefore no native item IDs, mirroring [`LoroText::get_cursor`].
+    /// An attached empty or fully deleted text returns an empty vector.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use loro::LoroDoc;
+    ///
+    /// let doc = LoroDoc::new();
+    /// let text = doc.get_text("text");
+    /// text.insert(0, "hello").unwrap();
+    /// let runs = text.get_text_id_runs().unwrap();
+    /// assert_eq!(runs.iter().map(|run| run.unicode_len).sum::<usize>(), 5);
+    /// assert_eq!(runs[0].unicode_pos, 0);
+    /// ```
+    pub fn get_text_id_runs(&self) -> Option<Vec<TextIdRun>> {
+        self.handler.get_text_id_runs()
     }
 
     /// Whether the text container is deleted.

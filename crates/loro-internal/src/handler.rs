@@ -4,7 +4,10 @@ use crate::{
     container::{
         idx::ContainerIdx,
         list::list_op::{DeleteSpan, DeleteSpanWithId, ListOp},
-        richtext::{richtext_state::PosType, RichtextState, StyleKey, StyleOp, TextStyleInfoFlag},
+        richtext::{
+            richtext_state::PosType, RichtextState, StyleKey, StyleOp, TextIdRun,
+            TextStyleInfoFlag,
+        },
     },
     cursor::{Cursor, Side},
     delta::{DeltaItem, Meta, StyleMeta, TreeExternalDiff},
@@ -2888,6 +2891,34 @@ impl TextHandler {
                     origin_pos,
                 })
             }
+        }
+    }
+
+    /// Read the live text of this container as ordered runs of contiguous
+    /// native item IDs.
+    ///
+    /// Each returned run starts at a native item [`ID`] and covers
+    /// `unicode_len` consecutive Unicode scalars whose IDs are
+    /// `(start.peer, start.counter + k)` for `k` in `0..unicode_len`.
+    /// `unicode_pos` is the Unicode scalar offset of the run's first scalar in
+    /// the current live text, so the runs partition the live text exactly.
+    ///
+    /// The runs are maximal: two adjacent runs never share a peer with
+    /// contiguous counters. Style anchors carry no scalars and are skipped.
+    ///
+    /// This is a read-only observation of the native text chunks already held by
+    /// the container state, in either lazy-load state. It never replays history
+    /// and never infers an interior ID from two queried endpoints.
+    ///
+    /// Returns `None` for a detached container, which has no native container
+    /// and therefore no native item IDs; it mirrors [`TextHandler::get_cursor`].
+    /// An attached empty or fully deleted text returns an empty vector.
+    pub fn get_text_id_runs(&self) -> Option<Vec<TextIdRun>> {
+        match &self.inner {
+            MaybeDetached::Detached(_) => None,
+            MaybeDetached::Attached(a) => Some(
+                a.with_state(|state| state.as_richtext_state().unwrap().get_text_id_runs()),
+            ),
         }
     }
 
