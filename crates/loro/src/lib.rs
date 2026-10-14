@@ -154,6 +154,12 @@ impl LoroDoc {
         LoroDoc::_new(doc)
     }
 
+    /// Create an independent native COW branch of attached, settled state.
+    /// Retains immutable native payloads, with private mutable indexes and caches.
+    pub fn fork_cow(&self) -> LoroResult<Self> {
+        Ok(LoroDoc::_new(self.doc.fork_cow()?))
+    }
+
     /// Fork the document at the given frontiers.
     ///
     /// The created doc will only contain the history before the specified frontiers.

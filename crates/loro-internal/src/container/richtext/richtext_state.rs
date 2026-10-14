@@ -37,11 +37,46 @@ use super::{
 
 pub(crate) use crate::cursor::PosType;
 
+/// Native immutable tree payload; mutation first obtains exclusively owned nodes.
+/// The mutable cursor cache and authoritative style-range index stay branch-local.
+#[derive(Clone, Debug, Default)]
+struct NativeCow<T>(Arc<T>);
+impl<T> std::ops::Deref for NativeCow<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+impl<T: Clone> std::ops::DerefMut for NativeCow<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        Arc::make_mut(&mut self.0)
+    }
+}
+impl<T, I> FromIterator<I> for NativeCow<T>
+where
+    T: FromIterator<I>,
+{
+    fn from_iter<A: IntoIterator<Item = I>>(iter: A) -> Self {
+        Self(Arc::new(iter.into_iter().collect()))
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RichtextState {
-    tree: BTree<RichtextTreeTrait>,
+    tree: NativeCow<BTree<RichtextTreeTrait>>,
     style_ranges: Option<Box<StyleRangeMap>>,
     cached_cursor: Option<CachedCursor>,
+}
+
+impl RichtextState {
+    pub(crate) fn fork_cow(&self) -> Self {
+        Self {
+            tree: self.tree.clone(),
+            // This index is authoritative (annotation writes here), not a rebuildable cache.
+            style_ranges: self.style_ranges.clone(),
+            cached_cursor: None,
+        }
+    }
 }
 
 impl Display for RichtextState {

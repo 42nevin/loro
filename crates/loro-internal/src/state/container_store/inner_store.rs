@@ -82,6 +82,36 @@ impl std::fmt::Debug for InnerStore {
 
 /// This impl block contains all the mutation code that may break the invariants of this struct
 impl InnerStore {
+    pub(super) fn fork_cow(
+        &self,
+        arena: SharedArena,
+        config: &Configure,
+        install_resolver: bool,
+    ) -> Self {
+        let kv = self.kv.clone();
+        if install_resolver {
+            let resolver_kv = kv.arc_clone();
+            arena.set_parent_resolver(Some(move |child_id: ContainerID| {
+                let bytes = resolver_kv.get(&child_id.to_bytes())?;
+                ContainerWrapper::new_from_bytes(bytes).parent().cloned()
+            }));
+        }
+        Self {
+            arena,
+            kv,
+            config: config.clone(),
+            load_state: self.load_state,
+            store: self
+                .store
+                .iter()
+                .map(|s| s.as_ref().map(|s| s.fork_cow(config)))
+                .collect(),
+            value_cache_queue: VecDeque::new(),
+            evicted_since_full_load: self.evicted_since_full_load,
+            created_journal: None,
+        }
+    }
+
     #[inline]
     fn slot(idx: ContainerIdx) -> usize {
         idx.to_index() as usize

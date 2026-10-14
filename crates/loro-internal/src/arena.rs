@@ -322,6 +322,19 @@ impl SharedArena {
         }
     }
 
+    pub(crate) fn fork_cow(&self) -> Self {
+        let fork = self.fork();
+        // Replace the legacy fork's mutable string alias before exposing the branch.
+        let mut inner = Arc::try_unwrap(fork.inner)
+            .ok()
+            .expect("new arena is unique");
+        inner.str = Arc::new(Mutex::new(self.inner.str.lock().fork_cow()));
+        inner.containers.write().parent_resolver = None;
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+
     /// See [`ArenaExtent`].
     pub(crate) fn extent(&self) -> ArenaExtent {
         ArenaExtent {
@@ -641,13 +654,13 @@ impl SharedArena {
         let mut s = self.inner.str.lock();
         let s: &mut StrArena = &mut s;
         let mut ans = String::with_capacity(range.len());
-        ans.push_str(s.slice_str_by_unicode(range));
+        ans.push_str(&s.slice_str_by_unicode(range));
         ans
     }
 
     #[inline]
     pub fn with_text_slice(&self, range: Range<usize>, mut f: impl FnMut(&str)) {
-        f(self.inner.str.lock().slice_str_by_unicode(range))
+        f(&self.inner.str.lock().slice_str_by_unicode(range))
     }
 
     #[inline]
@@ -952,7 +965,7 @@ fn _alloc_str(text_lock: &mut MutexGuard<'_, StrArena>, str: &str) -> StrAllocRe
 
 fn _slice_str(range: Range<usize>, s: &mut StrArena) -> String {
     let mut ans = String::with_capacity(range.len());
-    ans.push_str(s.slice_str_by_unicode(range));
+    ans.push_str(&s.slice_str_by_unicode(range));
     ans
 }
 

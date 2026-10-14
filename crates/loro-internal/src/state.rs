@@ -524,6 +524,37 @@ impl DocState {
         ))
     }
 
+    pub(crate) fn fork_cow(
+        &self,
+        doc: Weak<LoroDocInner>,
+        arena: SharedArena,
+        config: Configure,
+        lock_group: &LoroLockGroup,
+    ) -> Arc<LoroMutex<Self>> {
+        let peer = Arc::new(AtomicU64::new(DefaultRandom.next_u64()));
+        let store = self
+            .store
+            .fork_cow(arena.clone(), peer.clone(), config.clone());
+        Arc::new(lock_group.new_lock(
+            Self {
+                peer,
+                frontiers: self.frontiers.clone(),
+                store,
+                arena,
+                config,
+                doc,
+                in_txn: false,
+                changed_idx_in_txn: FxHashSet::default(),
+                event_recorder: Default::default(),
+                dead_containers_cache: Default::default(),
+                alive_containers_cache: None,
+                record_changes_only: false,
+                local_rollback: None,
+            },
+            crate::lock::LockKind::DocState,
+        ))
+    }
+
     pub fn fork_with_new_peer_id(
         &mut self,
         doc: Weak<LoroDocInner>,

@@ -118,6 +118,29 @@ impl From<AppDagNodeInner> for AppDagNode {
 }
 
 impl AppDag {
+    pub(super) fn fork_cow(&self, change_store: ChangeStore) -> Self {
+        Self {
+            change_store,
+            map: Mutex::new(
+                self.map
+                    .lock()
+                    .iter()
+                    .map(|(id, n)| (*id, AppDagNode::new((*n.inner).clone())))
+                    .collect(),
+            ),
+            frontiers: self.frontiers.clone(),
+            vv: self.vv.clone(),
+            shallow_since_frontiers: self.shallow_since_frontiers.clone(),
+            shallow_root_frontiers_deps: self.shallow_root_frontiers_deps.clone(),
+            shallow_since_vv: self.shallow_since_vv.clone(),
+            unparsed_vv: Mutex::new(self.unparsed_vv.lock().clone()),
+            unhandled_dep_points: Mutex::new(self.unhandled_dep_points.lock().clone()),
+            pending_txn_node: None,
+            import_rollback_has_journal: AtomicBool::new(false),
+            import_rollback: Mutex::new(None),
+        }
+    }
+
     pub(super) fn new(change_store: ChangeStore) -> Self {
         Self {
             change_store,

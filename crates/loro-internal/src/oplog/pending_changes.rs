@@ -37,6 +37,10 @@ pub(crate) struct PendingChanges {
 }
 
 impl PendingChanges {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.changes.is_empty()
+    }
+
     pub(crate) fn has_state_apply_rollback_ops(&self) -> bool {
         self.changes.values().any(|tree| {
             tree.values().any(|changes| {

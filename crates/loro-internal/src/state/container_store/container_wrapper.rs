@@ -143,6 +143,27 @@ impl LazyDecodedValue {
 }
 
 impl ContainerWrapper {
+    pub(super) fn fork_cow(&self, config: &crate::configure::Configure) -> Self {
+        let data = match &self.data {
+            ContainerData::State(state) => ContainerData::State(state.fork(config)),
+            ContainerData::Lazy(lazy) => ContainerData::Lazy(Box::new(LazyContainerData {
+                bytes: lazy.bytes.clone(),
+                value: None,
+                bytes_offset_for_value: lazy.bytes_offset_for_value,
+                bytes_offset_for_state: lazy.bytes_offset_for_state,
+            })),
+        };
+        Self {
+            depth: self.depth,
+            kind: self.kind,
+            parent: self.parent.clone(),
+            data,
+            flushed: self.flushed,
+            in_value_cache_queue: false,
+            value_cache_referenced: false,
+        }
+    }
+
     pub fn new(state: State, arena: &SharedArena) -> Self {
         let idx = state.container_idx();
         let parent = arena

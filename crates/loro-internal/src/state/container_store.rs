@@ -87,6 +87,30 @@ macro_rules! ctx {
 }
 
 impl ContainerStore {
+    pub(crate) fn fork_cow(
+        &self,
+        arena: SharedArena,
+        peer: Arc<AtomicU64>,
+        config: Configure,
+    ) -> Self {
+        // Root read caches are document-local too, even though root bytes are immutable.
+        let shallow_root_store = self.shallow_root_store.as_ref().map(|root| {
+            Arc::new(GcStore {
+                shallow_root_frontiers: root.shallow_root_frontiers.clone(),
+                encoded_state_bytes: root.encoded_state_bytes.clone(),
+                store: Mutex::new(root.store.lock().fork_cow(arena.clone(), &config, false)),
+                pruned_root: OnceCell::new(),
+            })
+        });
+        Self {
+            store: self.store.fork_cow(arena.clone(), &config, true),
+            arena,
+            conf: config,
+            peer,
+            shallow_root_store,
+        }
+    }
+
     pub fn new(arena: SharedArena, conf: Configure, peer: Arc<AtomicU64>) -> Self {
         ContainerStore {
             store: InnerStore::new(arena.clone(), conf.clone()),

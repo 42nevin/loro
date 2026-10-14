@@ -162,6 +162,46 @@ pub(crate) fn state_apply_can_reject(ty: ContainerType) -> bool {
 }
 
 impl OpLog {
+    pub(crate) fn fork_cow(
+        &self,
+        arena: SharedArena,
+        configure: Configure,
+        visible_op_count: Arc<AtomicUsize>,
+    ) -> Result<Self, LoroError> {
+        if !self.pending_changes.is_empty()
+            || self.batch_importing
+            || self.uncommitted_change.is_some()
+            || self.import_rollback.is_some()
+        {
+            return Err(LoroError::TransactionError(
+                "native fork requires a settled op log".into(),
+            ));
+        }
+        self.change_store.corrupt_block_error()?;
+        let change_store = self
+            .change_store
+            .fork_cow(arena.clone(), configure.merge_interval_in_s.clone());
+        arena.set_creator_resolver(change_store.creator_resolver());
+        Ok(Self {
+            dag: self.dag.fork_cow(change_store.clone()),
+            history_cache: Mutex::new(ContainerHistoryCache::new(change_store.clone(), None)),
+            change_store,
+            arena,
+            configure,
+            visible_op_count,
+            pending_changes: Default::default(),
+            batch_importing: false,
+            uncommitted_change: None,
+            import_rollback: None,
+        })
+    }
+
+    pub(crate) fn set_fork_root(&mut self, state: &DocState) {
+        self.history_cache
+            .lock()
+            .set_shallow_root_store(state.shallow_root_store().cloned());
+    }
+
     #[inline]
     pub(crate) fn new(visible_op_count: Arc<AtomicUsize>) -> Self {
         let arena = SharedArena::new();

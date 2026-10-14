@@ -163,6 +163,57 @@ impl LoroDoc {
         LoroDoc { inner }
     }
 
+    /// Native immutable-payload branch of an attached, settled document.
+    /// No export/import, subscriptions, mutable config, or read caches cross owners.
+    pub fn fork_cow(&self) -> LoroResult<Self> {
+        self.with_barrier(|| {
+            if self.is_detached() {
+                return Err(LoroError::TransactionError(
+                    "native fork requires attached state".into(),
+                ));
+            }
+            let source_oplog = self.oplog.lock();
+            let source_state = self.state.lock();
+            let arena = self.arena.fork_cow();
+            let config = self.config.fork();
+            let visible_op_count =
+                Arc::new(AtomicUsize::new(source_oplog.visible_op_count_exact()));
+            let mut oplog =
+                source_oplog.fork_cow(arena.clone(), config.clone(), visible_op_count.clone())?;
+            let lock_group = LoroLockGroup::new();
+            let inner = Arc::new_cyclic(|w| {
+                let state =
+                    source_state.fork_cow(w.clone(), arena.clone(), config.clone(), &lock_group);
+                oplog.set_fork_root(&state.lock());
+                LoroDocInner {
+                    oplog: Arc::new(lock_group.new_lock(oplog, LockKind::OpLog)),
+                    state,
+                    config,
+                    visible_op_count,
+                    detached: AtomicBool::new(false),
+                    auto_commit: AtomicBool::new(false),
+                    observer: Arc::new(Observer::new(arena.clone())),
+                    diff_calculator: Arc::new(
+                        lock_group.new_lock(DiffCalculator::new(true), LockKind::DiffCalculator),
+                    ),
+                    txn: Arc::new(lock_group.new_lock(None, LockKind::Txn)),
+                    arena,
+                    local_update_subs: SubscriberSetWithQueue::new(),
+                    peer_id_change_subs: SubscriberSetWithQueue::new(),
+                    pre_commit_subs: SubscriberSetWithQueue::new(),
+                    first_commit_from_peer_subs: SubscriberSetWithQueue::new(),
+                }
+            });
+            drop(source_state);
+            drop(source_oplog);
+            let doc = Self { inner };
+            if self.auto_commit.load(std::sync::atomic::Ordering::Relaxed) {
+                doc.start_auto_commit();
+            }
+            Ok(doc)
+        })
+    }
+
     pub fn fork(&self) -> Self {
         if self.is_detached() {
             return self

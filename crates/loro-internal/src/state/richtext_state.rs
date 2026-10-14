@@ -1004,7 +1004,10 @@ impl ContainerState for RichtextState {
         Self {
             idx: self.idx,
             config: config.text_style_config.clone(),
-            state: self.state.clone(),
+            state: match &self.state {
+                LazyLoad::Src(loader) => LazyLoad::Src(loader.clone()),
+                LazyLoad::Dst(state) => LazyLoad::Dst(state.fork_cow()),
+            },
             version_id: 0,
         }
     }

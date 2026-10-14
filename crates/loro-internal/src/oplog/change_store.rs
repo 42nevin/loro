@@ -885,6 +885,37 @@ impl ChangeStore {
             .sum()
     }
 
+    pub(crate) fn fork_cow(&self, arena: SharedArena, merge_interval: Arc<AtomicI64>) -> Self {
+        let mut inner = self.inner.lock().clone();
+        // The block's OnceCell header is a private read cache, not a shared page.
+        inner.mem_parsed_kv = inner
+            .mem_parsed_kv
+            .into_iter()
+            .map(|(id, block)| {
+                let mut block = (*block).clone();
+                match &mut block.content {
+                    ChangesBlockContent::Bytes(bytes) | ChangesBlockContent::Both(_, bytes) => {
+                        // An initialized header owns nested OnceCells; never share it.
+                        bytes.header = OnceCell::new();
+                    }
+                    ChangesBlockContent::Changes(_) => {}
+                }
+                (id, Arc::new(block))
+            })
+            .collect();
+        Self {
+            inner: Arc::new(Mutex::new(inner)),
+            arena,
+            external_kv: self.external_kv.lock().clone_store(),
+            external_vv: Arc::new(Mutex::new(self.external_vv.lock().clone())),
+            merge_interval,
+            root_history_names: Arc::new(Mutex::new(RootHistoryNamesState::Uninitialized)),
+            parse_failures: Default::default(),
+            #[cfg(test)]
+            root_history_scan_count: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
     pub fn fork(
         &self,
         arena: SharedArena,
