@@ -6,6 +6,8 @@ mod counter;
 pub(crate) use counter::CounterDiffCalculator;
 pub(super) mod tree;
 mod unknown;
+#[cfg(feature = "strider-experiment")]
+pub mod strider_experiment;
 use either::Either;
 use generic_btree::rle::{HasLength as _, Sliceable as _};
 use itertools::Itertools;
@@ -55,6 +57,8 @@ use super::{
 /// TODO: persist diffCalculator and skip processed version
 #[derive(Debug)]
 pub struct DiffCalculator {
+    #[cfg(feature = "strider-experiment")]
+    allow_strider: bool,
     /// ContainerIdx -> (depth, calculator)
     ///
     /// if depth is None, we need to calculate it again
@@ -135,6 +139,8 @@ impl DiffCalculator {
     /// for importing updates and requires more memory.
     pub fn new(persist: bool) -> Self {
         Self {
+            #[cfg(feature = "strider-experiment")]
+            allow_strider: false,
             calculators: Default::default(),
             retain_mode: if persist {
                 DiffCalculatorRetainMode::Persist
@@ -142,6 +148,17 @@ impl DiffCalculator {
                 DiffCalculatorRetainMode::Once { used: false }
             },
         }
+    }
+
+    /// Only attached import orchestration may try the local research fast path.
+    pub(crate) fn new_for_import() -> Self {
+        #[allow(unused_mut)]
+        let mut calculator = Self::new(false);
+        #[cfg(feature = "strider-experiment")]
+        {
+            calculator.allow_strider = true;
+        }
+        calculator
     }
 
     /// The containers touched by the ranges this calculator has computed diffs for.
@@ -170,6 +187,22 @@ impl DiffCalculator {
     ) -> (Vec<InternalContainerDiff>, DiffMode) {
         if before == after {
             return (Vec::new(), DiffMode::Linear);
+        }
+
+        #[cfg(feature = "strider-experiment")]
+        if self.allow_strider
+            && matches!(self.retain_mode, DiffCalculatorRetainMode::Once { used: false })
+            && container_filter.is_none()
+        {
+            if let Some(diff) = strider_experiment::try_disjoint_import(
+                oplog, before, before_frontiers, after, after_frontiers,
+            ) {
+                // Retain touched-root bookkeeping without replaying history through
+                // a CRDT tracker (the calculator still allocates its empty tracker).
+                self.get_or_create_calc(diff.idx, oplog.arena.get_depth(diff.idx));
+                self.retain_mode = DiffCalculatorRetainMode::Once { used: true };
+                return (vec![diff], DiffMode::Import);
+            }
         }
 
         let s = tracing::span!(tracing::Level::INFO, "DiffCalc", ?before, ?after,);

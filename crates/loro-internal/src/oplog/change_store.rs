@@ -1240,6 +1240,41 @@ mod mut_inner_kv {
             debug_assert!(self.get_change(id).is_some());
         }
 
+        #[cfg(feature = "strider-experiment")]
+        pub(crate) fn prove_encoded_initial_text(
+            &self, tip: ID, container: &ContainerID,
+        ) -> LoroResult<Option<usize>> {
+            let Some(block) = self.get_block_that_contains(tip) else { return Ok(None); };
+            match &block.content {
+                ChangesBlockContent::Bytes(bytes) | ChangesBlockContent::Both(_, bytes) =>
+                    block_encode::prove_initial_text_insert(&bytes.bytes, tip, container),
+                ChangesBlockContent::Changes(_) => Ok(None),
+            }
+        }
+
+        /// Inspect only an already decoded block. Unlike `get_change`, this never
+        /// loads external bytes, parses a block, or mutates the shared arena.
+        #[cfg(feature = "strider-experiment")]
+        pub(crate) fn peek_parsed_change(&self, id: ID) -> Option<BlockChangeRef> {
+            let inner = self.inner.lock();
+            if inner.retired {
+                return None;
+            }
+            let (_, block) = inner.mem_parsed_kv.range(..=id).next_back()?;
+            if block.peer != id.peer
+                || id.counter < block.counter_range.0
+                || id.counter >= block.counter_range.1
+            {
+                return None;
+            }
+            block.content.try_changes()?;
+            let change_index = block.get_change_index_by_counter(id.counter).ok()?;
+            Some(BlockChangeRef {
+                change_index,
+                block: block.clone(),
+            })
+        }
+
         pub fn get_change(&self, id: ID) -> Option<BlockChangeRef> {
             let block = self.get_parsed_block(id)?;
             Some(BlockChangeRef {
@@ -2229,6 +2264,58 @@ mod test {
     };
 
     use super::*;
+
+    #[cfg(feature = "strider-experiment")]
+    #[test]
+    fn borrowed_proof_keeps_base_bytes_and_arena_unchanged() {
+        let doc = LoroDoc::new_auto_commit();
+        doc.set_peer_id(7).unwrap();
+        doc.get_text("t").insert(0, "a😀中", PosType::Unicode).unwrap();
+        doc.commit_then_renew();
+        let oplog = doc.oplog.lock();
+        let store = oplog.change_store();
+        store.inner.lock().mem_parsed_kv.get_mut(&ID::new(7, 0)).unwrap().to_bytes(&oplog.arena);
+        let before = format!("{:?}", oplog.arena.extent());
+        assert_eq!(store.prove_encoded_initial_text(ID::new(7, 2), &ContainerID::new_root("t", crate::ContainerType::Text)).unwrap(), Some(3));
+        assert_eq!(before, format!("{:?}", oplog.arena.extent()));
+        assert!(matches!(store.inner.lock().mem_parsed_kv[&ID::new(7, 0)].content, ChangesBlockContent::Bytes(_)));
+        assert!(store.peek_parsed_change(ID::new(7, 2)).is_none());
+    }
+
+    #[cfg(feature = "strider-experiment")]
+    #[test]
+    fn parsed_peek_never_materializes_history() {
+        let doc = LoroDoc::new_auto_commit();
+        doc.set_peer_id(7).unwrap();
+        doc.get_text("t").insert(0, "a😀中", PosType::Unicode).unwrap();
+        doc.commit_then_renew();
+        let oplog = doc.oplog.lock();
+        let store = oplog.change_store();
+        let tip = ID::new(7, 2);
+        // Existing decoded content is accessible, absent/edge IDs are not.
+        assert!(store.peek_parsed_change(tip).is_some());
+        assert!(store.peek_parsed_change(ID::new(8, 0)).is_none());
+        assert!(store.peek_parsed_change(ID::new(7, -1)).is_none());
+        assert!(store.peek_parsed_change(ID::new(7, 3)).is_none());
+        {
+            let mut inner = store.inner.lock();
+            let block = inner.mem_parsed_kv.get_mut(&ID::new(7, 0)).unwrap();
+            block.to_bytes(&oplog.arena);
+            assert!(matches!(block.content, ChangesBlockContent::Bytes(_)));
+        }
+        let before_extent = format!("{:?}", oplog.arena.extent());
+        assert!(store.peek_parsed_change(tip).is_none());
+        assert_eq!(before_extent, format!("{:?}", oplog.arena.extent()));
+        assert!(matches!(
+            store.inner.lock().mem_parsed_kv[&ID::new(7, 0)].content,
+            ChangesBlockContent::Bytes(_)
+        ));
+        // An explicit ordinary lookup may parse it; peeking itself never does.
+        assert!(store.get_change(tip).is_some());
+        assert!(store.peek_parsed_change(tip).is_some());
+        store.inner.lock().retired = true;
+        assert!(store.peek_parsed_change(tip).is_none());
+    }
 
     fn test_encode_decode(doc: LoroDoc) {
         doc.commit_then_renew();

@@ -671,6 +671,18 @@ impl OpLog {
             .unwrap_or(Lamport::MAX)
     }
 
+    #[cfg(feature = "strider-experiment")]
+    pub(crate) fn prove_encoded_initial_text(
+        &self, tip: ID, container: &loro_common::ContainerID,
+    ) -> loro_common::LoroResult<Option<usize>> {
+        self.change_store.prove_encoded_initial_text(tip, container)
+    }
+
+    #[cfg(feature = "strider-experiment")]
+    pub(crate) fn peek_parsed_change_at(&self, id: ID) -> Option<BlockChangeRef> {
+        self.change_store.peek_parsed_change(id)
+    }
+
     pub fn get_change_at(&self, id: ID) -> Option<BlockChangeRef> {
         self.change_store.get_change(id)
     }

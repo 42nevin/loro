@@ -45,6 +45,8 @@ over graceful degradation.
   go next to anchors, the insert cursor cache, and delete `start_id`s:
   [../../context/richtext-insert-positions.md](../../context/richtext-insert-positions.md).
 - `docs/diff_calc.md`: design notes for diff calculation.
+- Local-only optional disjoint text import experiment and its strict eligibility:
+  [../../context/strider-disjoint-import-experiment.md](../../context/strider-disjoint-import-experiment.md).
 - `docs/critical-version-spec.md`: specification and proof skeleton for
   replay-base selection (Eg-walker-aligned terminology; defines critical
   version, the entry check, and the fallback sweep).

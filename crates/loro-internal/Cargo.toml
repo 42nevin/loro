@@ -88,6 +88,8 @@ doctest = false
 bench = false
 
 [features]
+# Local research only: bounded disjoint-text OT before the existing CRDT replay.
+strider-experiment = []
 # "wasm" will use utf-16 index by default when using text related stuff; But it'll use utf-8 encoding internally.
 wasm = ["wasm-bindgen", "js-sys", "loro-common/wasm"]
 # whether to use list slice instead of raw str in text container

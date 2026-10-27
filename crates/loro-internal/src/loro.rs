@@ -706,7 +706,7 @@ impl LoroDoc {
             let old_frontiers = oplog.frontiers().clone();
             let result = f(&mut oplog);
             if &old_vv != oplog.vv() {
-                let mut diff = DiffCalculator::new(false);
+                let mut diff = DiffCalculator::new_for_import();
                 let (diff, diff_mode) = diff.calc_diff_internal(
                     &oplog,
                     &old_vv,
@@ -856,7 +856,7 @@ impl LoroDoc {
                     return Err(e);
                 }
             }
-            let mut calc = DiffCalculator::new(false);
+            let mut calc = DiffCalculator::new_for_import();
             // Applying may have unlocked pending changes; the isolated fast path is only valid
             // when exactly the candidate batch was appended on top of the old version.
             let isolated_batch = isolated_batch.filter(|(component_vv, _)| {

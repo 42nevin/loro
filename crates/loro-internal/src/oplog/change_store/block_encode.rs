@@ -526,6 +526,73 @@ pub fn decode_cids(
     Ok(header)
 }
 
+/// Prove a canonical initial text run without allocating its text in SharedArena.
+/// All decoder metadata streams are checked, including streams unused by Text.
+#[cfg(feature = "strider-experiment")]
+pub(super) fn prove_initial_text_insert(
+    bytes: &[u8],
+    tip: ID,
+    expected_container: &ContainerID,
+) -> LoroResult<Option<usize>> {
+    let doc: EncodedBlock = postcard::from_bytes(bytes)
+        .map_err(|_| LoroError::DecodeDataCorruptionError)?;
+    let Some(end) = tip.counter.checked_add(1).filter(|end| *end > 0) else {
+        return Ok(None);
+    };
+    if doc.n_changes != 1 || doc.counter_start != 0 || doc.counter_len != end as u32 {
+        return Ok(None);
+    }
+    let header = decode_header_from_doc(&doc)?;
+    if header.peer != tip.peer
+        || header.counters.as_slice() != [0, end]
+        || header.lamports.len() != 1
+        || header.deps_groups.len() != 1
+        || !header.deps_groups[0].is_empty()
+    {
+        return Ok(None);
+    }
+    // Reuse normal metadata parsers. Nonempty commit messages deliberately
+    // remain outside this small proof rather than duplicating their decoder.
+    let timestamps = DeltaOfDeltaDecoder::<i64>::new(&doc.change_meta)
+        .map_err(|_| LoroError::DecodeDataCorruptionError)?;
+    let (timestamps, rest) = timestamps.take_n_finalize(1)
+        .map_err(|_| LoroError::DecodeDataCorruptionError)?;
+    if timestamps.len() != 1 { return Err(LoroError::DecodeDataCorruptionError); }
+    let (message_lengths, messages) = AnyRleDecoder::<u32>::new(rest).take_n_finalize(1)
+        .map_err(|_| LoroError::DecodeDataCorruptionError)?;
+    if message_lengths.as_slice() != [0] || !messages.is_empty() {
+        return Ok(None);
+    }
+    PositionArena::decode_v2(&doc.positions)?.try_parse_to_positions()?;
+    if !doc.delete_start_ids.is_empty() {
+        let deletes: EncodedDeleteStartIds = serde_columnar::from_bytes(&doc.delete_start_ids)?;
+        if !deletes.delete_start_ids.is_empty() {
+            return Ok(None);
+        }
+    }
+    let header = decode_cids(bytes, Some(header))?;
+    let cids = header.cids.get().ok_or(LoroError::DecodeDataCorruptionError)?;
+    let mut ops = serde_columnar::iter_from_bytes::<EncodedOps>(&doc.ops)?.ops;
+    let Some(op) = ops.next().transpose()? else { return Ok(None); };
+    if ops.next().transpose()?.is_some()
+        || op.prop != 0
+        || op.len != end as u32
+        || !matches!(ValueKind::from_u8(op.value_type), ValueKind::Str)
+    {
+        return Ok(None);
+    }
+    let cid = cids.get(op.container_index as usize)
+        .ok_or(LoroError::DecodeDataCorruptionError)?;
+    if cid != expected_container || !cid.is_root() || cid.is_mergeable()
+        || cid.container_type() != loro_common::ContainerType::Text
+    {
+        return Ok(None);
+    }
+    let mut reader = ValueReader::new(&doc.values);
+    let text = reader.read_str()?;
+    Ok((text.chars().count() == end as usize).then_some(end as usize))
+}
+
 // MARK: decode_block
 pub fn decode_block(
     m_bytes: &[u8],
@@ -710,6 +777,45 @@ mod test {
     use crate::{cursor::PosType, delta::DeltaValue, loro::ExportMode, LoroDoc};
 
     use super::*;
+
+    #[cfg(feature = "strider-experiment")]
+    #[test]
+    fn borrowed_base_proof_checks_all_metadata_without_arena_materialization() {
+        for body in ["abcdef", "a😀中", "é𝄞文"] {
+            let doc = LoroDoc::new_auto_commit();
+            doc.set_peer_id(7).unwrap();
+            doc.get_text("t").insert(0, body, PosType::Unicode).unwrap();
+            doc.commit_then_renew();
+            let oplog = doc.oplog.lock();
+            let mut changes = Vec::new();
+            oplog.change_store().visit_all_changes(&mut |c| changes.push(c.clone()));
+            let bytes = encode_block(&changes, &oplog.arena);
+            let tip = ID::new(7, body.chars().count() as i32 - 1);
+            let cid = ContainerID::new_root("t", ContainerType::Text);
+            let before = format!("{:?}", oplog.arena.extent());
+            assert_eq!(prove_initial_text_insert(&bytes, tip, &cid).unwrap(), Some(body.chars().count()));
+            assert_eq!(before, format!("{:?}", oplog.arena.extent()));
+            assert_eq!(prove_initial_text_insert(&bytes, tip.inc(1), &cid).unwrap(), None);
+            assert_eq!(prove_initial_text_insert(&bytes, tip, &ContainerID::new_root("other", ContainerType::Text)).unwrap(), None);
+            for field in 0..8 {
+                let mut encoded: EncodedBlock = postcard::from_bytes(&bytes).unwrap();
+                // Truncated metadata/value streams must never certify a fast path.
+                match field {
+                    0 => encoded.change_meta = Cow::Owned(vec![0x80]),
+                    1 => encoded.positions = Cow::Owned(vec![0xff]),
+                    2 => encoded.keys = Cow::Owned(vec![0xff]),
+                    3 => encoded.cids = Cow::Owned(vec![0xff]),
+                    4 => encoded.values = Cow::Owned(vec![0x80]),
+                    5 => encoded.delete_start_ids = Cow::Owned(vec![0xff]),
+                    6 => encoded.ops = Cow::Owned(vec![0xff]),
+                    _ => { let mut v = encoded.values.to_vec(); *v.last_mut().unwrap() = 0xff; encoded.values = Cow::Owned(v); }
+                }
+                let truncated = postcard::to_allocvec(&encoded).unwrap();
+                assert!(prove_initial_text_insert(&truncated, tip, &cid).is_err(), "field {field}");
+                assert!(decode_block(&truncated, &SharedArena::new(), None).is_err(), "normal decoder field {field}");
+            }
+        }
+    }
 
     #[test]
     fn decode_block_rejects_corrupt_payload_without_panic() {
