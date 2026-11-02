@@ -1007,6 +1007,7 @@ dependencies = [
  "arbitrary",
  "arref",
  "heapless 0.9.1",
+ "im",
  "itertools 0.11.0",
  "loro-thunderdome",
  "proc-macro2",
@@ -1930,8 +1931,6 @@ dependencies = [
 [[package]]
 name = "loro-thunderdome"
 version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f3d053a135388e6b1df14e8af1212af5064746e9b87a06a345a7a779ee9695a"
 
 [[package]]
 name = "loro-wasm"

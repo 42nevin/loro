@@ -8,10 +8,53 @@ use crate::{
 };
 use bytes::Bytes;
 use loro_common::{ContainerID, ContainerType, LoroResult, LoroValue};
-use rustc_hash::FxHashSet;
-use std::collections::VecDeque;
+use rustc_hash::{FxHashSet, FxHasher};
+use std::hash::BuildHasherDefault;
+use std::{collections::VecDeque, sync::Arc};
 
 use super::ContainerWrapper;
+
+// Slots share immutable owner-bound inputs. Every state/value/decode access first
+// makes the selected slot private and binds it to this store, including after the
+// original owner is dropped. Metadata-only reads never expose a State reference.
+type SlotMap = im::HashMap<usize, StoreSlot, BuildHasherDefault<FxHasher>>;
+struct StoreOwner;
+struct StoreSlot {
+    owner: Arc<StoreOwner>,
+    wrapper: Arc<ContainerWrapper>,
+}
+impl Clone for StoreSlot {
+    fn clone(&self) -> Self {
+        #[cfg(any(test, feature = "test_utils"))]
+        crate::cow_work::container_slot_ref_clone();
+        Self {
+            owner: self.owner.clone(),
+            wrapper: self.wrapper.clone(),
+        }
+    }
+}
+impl StoreSlot {
+    fn make_mut<'a>(
+        &'a mut self,
+        owner: &Arc<StoreOwner>,
+        config: &Configure,
+    ) -> &'a mut ContainerWrapper {
+        // The primary map's mutable path has detached before this check.
+        if !Arc::ptr_eq(&self.owner, owner) {
+            let private = self.wrapper.fork_cow(config);
+            #[cfg(any(test, feature = "test_utils"))]
+            crate::cow_work::container_slot_foreign_rebind();
+            self.wrapper = Arc::new(private);
+            self.owner = owner.clone();
+        } else if Arc::get_mut(&mut self.wrapper).is_none() {
+            let private = self.wrapper.clone_in_owner();
+            #[cfg(any(test, feature = "test_utils"))]
+            crate::cow_work::container_slot_same_detach();
+            self.wrapper = Arc::new(private);
+        }
+        Arc::get_mut(&mut self.wrapper).expect("selected wrapper is private")
+    }
+}
 
 /// Upper bound on how many lazy containers keep their decoded value cached in
 /// memory for the read paths (`map_get`, `list_get`, text reads, ...).
@@ -47,7 +90,8 @@ pub(super) const MAX_CACHED_CONTAINER_VALUES: usize = 16;
 /// Invariants: it should be agnostic to the users of this struct whether a container is stored in `kv` or `store`
 pub(crate) struct InnerStore {
     arena: SharedArena,
-    store: Vec<Option<ContainerWrapper>>,
+    store: SlotMap,
+    owner: Arc<StoreOwner>,
     kv: KvWrapper,
     load_state: LoadState,
     config: Configure,
@@ -96,20 +140,43 @@ impl InnerStore {
                 ContainerWrapper::new_from_bytes(bytes).parent().cloned()
             }));
         }
-        Self {
+        let mut fork = Self {
             arena,
             kv,
             config: config.clone(),
             load_state: self.load_state,
-            store: self
-                .store
-                .iter()
-                .map(|s| s.as_ref().map(|s| s.fork_cow(config)))
-                .collect(),
+            store: self.store.clone(),
+            owner: Arc::new(StoreOwner),
             value_cache_queue: VecDeque::new(),
             evicted_since_full_load: self.evicted_since_full_load,
             created_journal: None,
+        };
+        // Ordinary lazy-value producers always track their decoded values. Reset
+        // only this bounded current cache in the child, never enumerate historical
+        // slots. Keeping encoded wrappers preserves AllLoaded without a new KV scan.
+        // Internal callers that populate values through raw wrapper access must
+        // honor the same tracking obligation (explicit full-state walks are separate).
+        for &idx in &self.value_cache_queue {
+            #[cfg(any(test, feature = "test_utils"))]
+            crate::cow_work::container_fork_cache_visit();
+            let Some(source) = self.store.get(&Self::slot(idx)) else {
+                continue;
+            };
+            if !source.wrapper.is_evictable_cached_value() {
+                continue;
+            }
+            let private = source.wrapper.fork_cow(config);
+            fork.store.insert(
+                Self::slot(idx),
+                StoreSlot {
+                    owner: fork.owner.clone(),
+                    wrapper: Arc::new(private),
+                },
+            );
+            #[cfg(any(test, feature = "test_utils"))]
+            crate::cow_work::container_fork_cache_reset();
         }
+        fork
     }
 
     #[inline]
@@ -118,26 +185,27 @@ impl InnerStore {
     }
 
     #[inline]
-    fn get_entry_mut_in(
-        store: &mut [Option<ContainerWrapper>],
+    fn get_entry_mut_in<'a>(
+        store: &'a mut SlotMap,
+        owner: &Arc<StoreOwner>,
+        config: &Configure,
         idx: ContainerIdx,
-    ) -> Option<&mut ContainerWrapper> {
-        let entry = store.get_mut(Self::slot(idx))?.as_mut()?;
-        debug_assert_eq!(entry.kind(), idx.get_type());
-        Some(entry)
+    ) -> Option<&'a mut ContainerWrapper> {
+        let entry = store.get_mut(&Self::slot(idx))?;
+        debug_assert_eq!(entry.wrapper.kind(), idx.get_type());
+        Some(entry.make_mut(owner, config))
     }
 
     #[inline]
     fn get_entry_mut(&mut self, idx: ContainerIdx) -> Option<&mut ContainerWrapper> {
-        Self::get_entry_mut_in(&mut self.store, idx)
+        Self::get_entry_mut_in(&mut self.store, &self.owner, &self.config, idx)
     }
 
     #[inline]
-    fn contains_idx_in(store: &[Option<ContainerWrapper>], idx: ContainerIdx) -> bool {
+    fn contains_idx_in(store: &SlotMap, idx: ContainerIdx) -> bool {
         store
-            .get(Self::slot(idx))
-            .and_then(|entry| entry.as_ref())
-            .is_some_and(|entry| entry.kind() == idx.get_type())
+            .get(&Self::slot(idx))
+            .is_some_and(|entry| entry.wrapper.kind() == idx.get_type())
     }
 
     #[inline]
@@ -146,16 +214,41 @@ impl InnerStore {
     }
 
     fn insert_entry(
-        store: &mut Vec<Option<ContainerWrapper>>,
+        store: &mut SlotMap,
+        owner: &Arc<StoreOwner>,
         idx: ContainerIdx,
         container: ContainerWrapper,
-    ) -> Option<ContainerWrapper> {
+    ) -> Option<StoreSlot> {
         let slot = Self::slot(idx);
-        if store.len() <= slot {
-            store.resize_with(slot + 1, || None);
+        #[cfg(any(test, feature = "test_utils"))]
+        if !store.contains_key(&slot) {
+            crate::cow_work::container_slot_inserted();
         }
+        store.insert(
+            slot,
+            StoreSlot {
+                owner: owner.clone(),
+                wrapper: Arc::new(container),
+            },
+        )
+    }
 
-        store[slot].replace(container)
+    // Explicit whole-store operations retain the old ascending slot order. Only
+    // these enumeration APIs gather/sort references; point access and forks do not.
+    fn ordered_entries(store: &SlotMap) -> Vec<(usize, &StoreSlot)> {
+        let mut entries: Vec<_> = store.iter().map(|(key, value)| (*key, value)).collect();
+        entries.sort_unstable_by_key(|(key, _)| *key);
+        #[cfg(any(test, feature = "test_utils"))]
+        crate::cow_work::container_slot_enumeration(entries.len());
+        entries
+    }
+
+    fn ordered_entries_mut(store: &mut SlotMap) -> Vec<(usize, &mut StoreSlot)> {
+        let mut entries: Vec<_> = store.iter_mut().map(|(key, value)| (*key, value)).collect();
+        entries.sort_unstable_by_key(|(key, _)| *key);
+        #[cfg(any(test, feature = "test_utils"))]
+        crate::cow_work::container_slot_enumeration(entries.len());
+        entries
     }
 
     pub(super) fn get_or_insert_with(
@@ -175,7 +268,7 @@ impl InnerStore {
                     f()
                 }
             };
-            Self::insert_entry(&mut self.store, idx, container);
+            Self::insert_entry(&mut self.store, &self.owner, idx, container);
         }
 
         self.get_entry_mut(idx).unwrap()
@@ -194,7 +287,7 @@ impl InnerStore {
         let key = id.to_bytes();
         if let Some(v) = self.kv.get(&key) {
             let c = ContainerWrapper::new_from_bytes(v);
-            Self::insert_entry(&mut self.store, idx, c);
+            Self::insert_entry(&mut self.store, &self.owner, idx, c);
             return;
         }
 
@@ -202,7 +295,7 @@ impl InnerStore {
             journal.push(idx);
         }
         let c = f();
-        Self::insert_entry(&mut self.store, idx, c);
+        Self::insert_entry(&mut self.store, &self.owner, idx, c);
     }
 
     /// Start recording the containers that get new state. See `created_journal`.
@@ -225,9 +318,7 @@ impl InnerStore {
                 .arena
                 .get_container_id(idx)
                 .is_none_or(|id| self.kv.get(&id.to_bytes()).is_none()));
-            if let Some(slot) = self.store.get_mut(Self::slot(idx)) {
-                *slot = None;
-            }
+            self.store.remove(&Self::slot(idx));
         }
     }
 
@@ -237,7 +328,7 @@ impl InnerStore {
             let key = id.to_bytes();
             if let Some(v) = self.kv.get(&key) {
                 let c = ContainerWrapper::new_from_bytes(v);
-                Self::insert_entry(&mut self.store, idx, c);
+                Self::insert_entry(&mut self.store, &self.owner, idx, c);
             }
         }
 
@@ -261,7 +352,7 @@ impl InnerStore {
             let mut container = ContainerWrapper::new_from_bytes(v);
             let ans = f(&mut container);
             if container.has_cached_value() {
-                Self::insert_entry(&mut self.store, idx, container);
+                Self::insert_entry(&mut self.store, &self.owner, idx, container);
                 self.track_value_cache(idx);
             }
             return Some(ans);
@@ -320,9 +411,7 @@ impl InnerStore {
                 Action::Requeue => self.value_cache_queue.push_back(victim),
                 Action::Evict => {
                     let slot = Self::slot(victim);
-                    if let Some(entry) = self.store.get_mut(slot) {
-                        *entry = None;
-                    }
+                    self.store.remove(&slot);
                     // `store` may no longer mirror `kv`: a full enumeration has
                     // to re-scan `kv` even in `AllLoaded` mode.
                     self.evicted_since_full_load = true;
@@ -483,11 +572,10 @@ impl InnerStore {
             }
         });
         // Loaded entries can be newer than kv or absent from it.
-        for (slot, entry) in self.store.iter().enumerate() {
-            if let Some(c) = entry {
-                if matches!(c.kind(), ContainerType::Tree | ContainerType::MovableList) {
-                    out.insert(ContainerIdx::from_index_and_type(slot as u32, c.kind()));
-                }
+        for (slot, entry) in Self::ordered_entries(&self.store) {
+            let c = &entry.wrapper;
+            if matches!(c.kind(), ContainerType::Tree | ContainerType::MovableList) {
+                out.insert(ContainerIdx::from_index_and_type(slot as u32, c.kind()));
             }
         }
         out.into_iter().collect()
@@ -497,28 +585,28 @@ impl InnerStore {
         &mut self,
     ) -> impl Iterator<Item = (ContainerIdx, &mut ContainerWrapper)> {
         self.load_all();
-        self.store
-            .iter_mut()
-            .enumerate()
-            .filter_map(|(slot, entry)| {
-                entry.as_mut().map(|container| {
-                    (
-                        ContainerIdx::from_index_and_type(slot as u32, container.kind()),
-                        container,
-                    )
-                })
+        let owner = &self.owner;
+        let config = &self.config;
+        Self::ordered_entries_mut(&mut self.store)
+            .into_iter()
+            .map(move |(slot, entry)| {
+                let container = entry.make_mut(owner, config);
+                (
+                    ContainerIdx::from_index_and_type(slot as u32, container.kind()),
+                    container,
+                )
             })
     }
 
     pub(crate) fn iter_all_container_ids(&mut self) -> impl Iterator<Item = ContainerID> + '_ {
         // PERF: we don't need to load all the containers here
         self.load_all();
-        self.store.iter().enumerate().filter_map(|(slot, entry)| {
-            entry.as_ref().map(|container| {
-                let idx = ContainerIdx::from_index_and_type(slot as u32, container.kind());
+        Self::ordered_entries(&self.store)
+            .into_iter()
+            .map(|(slot, entry)| {
+                let idx = ContainerIdx::from_index_and_type(slot as u32, entry.wrapper.kind());
                 self.arena.get_container_id(idx).unwrap()
             })
-        })
     }
 
     pub(crate) fn encode(&mut self) -> Bytes {
@@ -531,10 +619,8 @@ impl InnerStore {
         let mut updates = Vec::new();
         let mut deleted_roots = Vec::new();
 
-        for (slot, entry) in self.store.iter_mut().enumerate() {
-            let Some(c) = entry.as_mut() else {
-                continue;
-            };
+        for (slot, entry) in Self::ordered_entries_mut(&mut self.store) {
+            let c = entry.make_mut(&self.owner, &self.config);
             let idx = ContainerIdx::from_index_and_type(slot as u32, c.kind());
             let cid = self.arena.get_container_id(idx).unwrap();
             if cid.is_root() && deleted.contains(&cid) && c.is_deleted_root_value_cleared() {
@@ -618,7 +704,7 @@ impl InnerStore {
                 let idx = guards.register_container(&cid);
                 let p = parent.as_ref().map(|p| guards.register_container(p));
                 guards.set_parent(idx, p);
-                if Self::insert_entry(store, idx, c).is_some() {}
+                if Self::insert_entry(store, &self.owner, idx, c).is_some() {}
             }
         });
 
@@ -626,8 +712,10 @@ impl InnerStore {
         // refer to replaced wrappers so the queue only names wrappers that are
         // actually enqueued.
         self.value_cache_queue.clear();
-        for entry in self.store.iter_mut().flatten() {
-            entry.set_in_value_cache_queue(false);
+        for (_, entry) in Self::ordered_entries_mut(&mut self.store) {
+            entry
+                .make_mut(&self.owner, &self.config)
+                .set_in_value_cache_queue(false);
         }
 
         self.evicted_since_full_load = false;
@@ -654,7 +742,7 @@ impl InnerStore {
                 }
 
                 let container = ContainerWrapper::new_from_bytes(v);
-                Self::insert_entry(store, idx, container);
+                Self::insert_entry(store, &self.owner, idx, container);
             }
         });
 
@@ -685,10 +773,9 @@ impl InnerStore {
             return false;
         }
 
-        self.store
-            .iter()
-            .filter_map(|entry| entry.as_ref())
-            .all(|c| c.is_state_empty())
+        Self::ordered_entries(&self.store)
+            .into_iter()
+            .all(|(_, c)| c.wrapper.is_state_empty())
     }
 
     #[cfg(test)]
@@ -703,9 +790,8 @@ impl InnerStore {
     #[cfg(test)]
     pub(super) fn cached_value_count_for_test(&self) -> usize {
         self.store
-            .iter()
-            .flatten()
-            .filter(|entry| entry.is_evictable_cached_value())
+            .values()
+            .filter(|entry| entry.wrapper.is_evictable_cached_value())
             .count()
     }
 
@@ -720,7 +806,8 @@ impl InnerStore {
     pub(crate) fn new(arena: SharedArena, config: Configure) -> Self {
         Self {
             arena,
-            store: Vec::new(),
+            store: SlotMap::default(),
+            owner: Arc::new(StoreOwner),
             kv: KvWrapper::new_mem(),
             load_state: LoadState::AllLoaded,
             config,
@@ -747,6 +834,204 @@ mod tests {
         atomic::{AtomicBool, Ordering},
         Arc,
     };
+
+    fn text_owner_facts(doc: &crate::LoroDoc) -> (usize, bool) {
+        let mut state = doc.app_state().lock();
+        let idx = state
+            .store
+            .arena
+            .register_container(&ContainerID::new_root("text", ContainerType::Text));
+        let wrapper = state.store.store.get_mut(idx).unwrap();
+        let crate::state::State::RichtextState(text) = wrapper.try_get_state().unwrap() else {
+            panic!("expected live text state")
+        };
+        (
+            text.get_version_id(),
+            Arc::ptr_eq(text.config_for_test(), doc.config().text_style_config()),
+        )
+    }
+
+    #[test]
+    fn cow_slot_access_preserves_source_version_and_rebinds_after_source_drop() {
+        let source = crate::LoroDoc::new_auto_commit();
+        source
+            .get_text("text")
+            .insert(0, "A界🙂Z", crate::cursor::PosType::Unicode)
+            .unwrap();
+        source.commit_then_renew();
+        let (before, bound) = text_owner_facts(&source);
+        assert!(before > 0 && bound);
+        let child = source.fork_cow().unwrap();
+        assert_eq!(text_owner_facts(&source), (before, true));
+        assert!(!Arc::ptr_eq(
+            source.config().text_style_config(),
+            child.config().text_style_config()
+        ));
+        drop(source);
+        assert_eq!(text_owner_facts(&child), (0, true));
+        assert_eq!(child.get_text("text").to_string(), "A界🙂Z");
+        child
+            .get_text("text")
+            .insert(1, "!", crate::cursor::PosType::Unicode)
+            .unwrap();
+        child.commit_then_renew();
+        assert!(text_owner_facts(&child).0 > 0);
+    }
+
+    fn lazy_map_value(store: &mut InnerStore, idx: ContainerIdx) -> LoroResult<LoroValue> {
+        let config = store.config.clone();
+        store
+            .with_container_for_read(idx, |entry| {
+                entry.try_get_value(
+                    idx,
+                    ContainerCreationContext {
+                        configure: &config,
+                        peer: 7,
+                    },
+                )
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn cow_same_owner_queue_survives_detach_and_evicts_without_affecting_child() {
+        let doc = crate::LoroDoc::new_auto_commit();
+        let n = MAX_CACHED_CONTAINER_VALUES * 2;
+        for i in 0..n {
+            doc.get_map(format!("map{i}"))
+                .insert("value", i as i64)
+                .unwrap();
+        }
+        doc.commit_then_renew();
+        let bytes = doc.app_state().lock().store.encode();
+        let arena = SharedArena::new();
+        let config = Configure::default();
+        let mut source = InnerStore::new(arena.clone(), config.clone());
+        source.decode(bytes).unwrap();
+        let indices: Vec<_> = (0..n)
+            .map(|i| {
+                arena.register_container(&ContainerID::new_root(
+                    &format!("map{i}"),
+                    ContainerType::Map,
+                ))
+            })
+            .collect();
+        let first = lazy_map_value(&mut source, indices[0]).unwrap();
+        assert_eq!(source.value_cache_queue.len(), 1);
+        let mut child = source.fork_cow(arena.fork_cow(), &config.fork(), false);
+        assert_eq!(lazy_map_value(&mut source, indices[0]).unwrap(), first);
+        assert_eq!(source.value_cache_queue.len(), 1);
+        assert!(source.has_cached_value_for_test(indices[0]));
+        assert!(child.value_cache_queue.is_empty());
+        assert_eq!(lazy_map_value(&mut child, indices[0]).unwrap(), first);
+        assert_eq!(child.value_cache_queue.len(), 1);
+        for idx in &indices[1..] {
+            assert!(lazy_map_value(&mut source, *idx).is_ok());
+        }
+        assert!(source.cached_value_count_for_test() <= MAX_CACHED_CONTAINER_VALUES);
+        assert!(!source.has_cached_value_for_test(indices[0]));
+        assert_eq!(lazy_map_value(&mut source, indices[0]).unwrap(), first);
+        assert!(source.value_cache_queue.len() <= MAX_CACHED_CONTAINER_VALUES);
+        assert_eq!(child.value_cache_queue.len(), 1);
+        assert!(child.has_cached_value_for_test(indices[0]));
+        assert_eq!(lazy_map_value(&mut child, indices[0]).unwrap(), first);
+        let config = source.config.clone();
+        let mut entries = source.iter_all_containers_mut();
+        let (a, left) = entries.next().unwrap();
+        let (b, right) = entries.next().unwrap();
+        assert_ne!(a, b);
+        assert!(!std::ptr::eq(left, right));
+        // Keep both mutable references alive at once; each decoder must retain
+        // an independent wrapper, not a reused iterator scratch location.
+        let ctx = ContainerCreationContext {
+            configure: &config,
+            peer: 7,
+        };
+        let left_value = left.try_get_value(a, ctx).unwrap();
+        let right_value = right.try_get_value(b, ctx).unwrap();
+        assert_ne!(left_value, right_value);
+        let mut order = vec![a.to_index(), b.to_index()];
+        order.extend(entries.map(|(idx, _)| idx.to_index()));
+        assert!(
+            order.windows(2).all(|pair| pair[0] < pair[1]),
+            "explicit mutable enumeration must preserve ordinal order"
+        );
+    }
+
+    #[test]
+    fn cow_repeated_fork_disjoint_lazy_reads_keep_cache_bounded_and_tracked() {
+        let doc = crate::LoroDoc::new_auto_commit();
+        let n = MAX_CACHED_CONTAINER_VALUES * 3;
+        for i in 0..n {
+            doc.get_map(format!("map{i}"))
+                .insert("value", i as i64)
+                .unwrap();
+        }
+        doc.commit_then_renew();
+        let bytes = doc.app_state().lock().store.encode();
+        let arena = SharedArena::new();
+        let mut current = InnerStore::new(arena.clone(), Configure::default());
+        current.decode(bytes).unwrap();
+        let indices: Vec<_> = (0..n)
+            .map(|i| {
+                arena.register_container(&ContainerID::new_root(
+                    &format!("map{i}"),
+                    ContainerType::Map,
+                ))
+            })
+            .collect();
+        let mut held = Vec::new();
+        for (i, idx) in indices.iter().enumerate() {
+            let next = current.fork_cow(current.arena.fork_cow(), &current.config.fork(), false);
+            assert_eq!(next.load_state, current.load_state);
+            assert_eq!(
+                next.evicted_since_full_load,
+                current.evicted_since_full_load
+            );
+            held.push(current);
+            current = next;
+            let value = lazy_map_value(&mut current, *idx).unwrap();
+            assert_eq!(
+                value.as_map().unwrap().get("value"),
+                Some(&LoroValue::I64(i as i64))
+            );
+            let cached = current.cached_value_count_for_test();
+            assert!(
+                cached <= MAX_CACHED_CONTAINER_VALUES,
+                "fork {i}: {cached} physically cached values"
+            );
+            assert!(
+                cached <= current.value_cache_queue.len(),
+                "fork {i}: cached value escaped queue ownership"
+            );
+        }
+        for (i, owner) in held.iter_mut().enumerate().skip(1) {
+            let value = lazy_map_value(owner, indices[i - 1]).unwrap();
+            assert_eq!(
+                value.as_map().unwrap().get("value"),
+                Some(&LoroValue::I64((i - 1) as i64))
+            );
+        }
+    }
+
+    #[test]
+    fn cow_cold_decode_failure_does_not_publish_value_or_queue_entry() {
+        let arena = SharedArena::new();
+        let id = ContainerID::new_root("broken", ContainerType::Map);
+        let idx = arena.register_container(&id);
+        let mut source = InnerStore::new(arena.clone(), Configure::default());
+        source.kv.set_all(vec![(
+            Bytes::from(id.to_bytes()),
+            encoded_container_header(ContainerType::Map, None),
+        )]);
+        let expected = source.kv.export();
+        let mut child = source.fork_cow(arena.fork_cow(), &Configure::default(), false);
+        drop(source);
+        assert!(lazy_map_value(&mut child, idx).is_err());
+        assert!(child.value_cache_queue.is_empty());
+        assert_eq!(child.cached_value_count_for_test(), 0);
+        assert_eq!(child.kv.export(), expected);
+    }
 
     fn encoded_container_header(kind: ContainerType, parent: Option<ContainerID>) -> Bytes {
         let mut output = Vec::new();

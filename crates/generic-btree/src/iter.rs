@@ -1,11 +1,12 @@
+use crate::storage::{ArenaStorage, Owned, StorageMode};
 use crate::{
     delete_range, rle::HasLength, ArenaIndex, BTree, BTreeTrait, Cursor, LeafNode, NodePath,
     QueryResult,
 };
 
 /// iterate node (not element) from the start path to the **inclusive** end path
-pub(super) struct Iter<'a, B: BTreeTrait> {
-    tree: &'a BTree<B>,
+pub(super) struct Iter<'a, B: BTreeTrait, M: StorageMode<B>> {
+    tree: &'a BTree<B, M>,
     inclusive_end: NodePath,
     path: NodePath,
     done: bool,
@@ -18,17 +19,17 @@ struct TempStore {
     leaf_after_drain_range: Option<ArenaIndex>,
 }
 
-pub struct Drain<'a, B: BTreeTrait> {
-    tree: &'a mut BTree<B>,
+pub struct Drain<'a, B: BTreeTrait, M: StorageMode<B> = Owned> {
+    tree: &'a mut BTree<B, M>,
     current_path: NodePath,
     done: bool,
     end_cursor: Option<Cursor>,
     store: Option<Box<TempStore>>,
 }
 
-impl<'a, B: BTreeTrait> Drain<'a, B> {
+impl<'a, B: BTreeTrait, M: StorageMode<B>> Drain<'a, B, M> {
     pub fn new(
-        tree: &'a mut BTree<B>,
+        tree: &'a mut BTree<B, M>,
         start_result: Option<QueryResult>,
         end_result: Option<QueryResult>,
     ) -> Self {
@@ -84,7 +85,7 @@ impl<'a, B: BTreeTrait> Drain<'a, B> {
         }
     }
 
-    fn none(tree: &'a mut BTree<B>) -> Drain<'a, B> {
+    fn none(tree: &'a mut BTree<B, M>) -> Drain<'a, B, M> {
         Self {
             current_path: Default::default(),
             done: true,
@@ -95,7 +96,7 @@ impl<'a, B: BTreeTrait> Drain<'a, B> {
     }
 }
 
-impl<'a, B: BTreeTrait> Iterator for Drain<'a, B> {
+impl<'a, B: BTreeTrait, M: StorageMode<B>> Iterator for Drain<'a, B, M> {
     type Item = B::Elem;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -125,13 +126,13 @@ impl<'a, B: BTreeTrait> Iterator for Drain<'a, B> {
     }
 }
 
-impl<'a, B: BTreeTrait> Drain<'a, B> {
+impl<'a, B: BTreeTrait, M: StorageMode<B>> Drain<'a, B, M> {
     fn ensure_finished(&mut self) {
         while self.next().is_some() {}
     }
 }
 
-impl<'a, B: BTreeTrait> Drop for Drain<'a, B> {
+impl<'a, B: BTreeTrait, M: StorageMode<B>> Drop for Drain<'a, B, M> {
     fn drop(&mut self) {
         self.ensure_finished();
         let TempStore {
@@ -252,7 +253,7 @@ impl<'a, B: BTreeTrait> Drop for Drain<'a, B> {
     }
 }
 
-fn seal<B: BTreeTrait>(tree: &mut BTree<B>, leaf: ArenaIndex) {
+fn seal<B: BTreeTrait, M: StorageMode<B>>(tree: &mut BTree<B, M>, leaf: ArenaIndex) {
     handle_lack_on_path_to_leaf(tree, leaf);
     if let Some(sibling) = tree.next_same_level_in_node(leaf) {
         handle_lack_on_path_to_leaf(tree, sibling);
@@ -260,7 +261,7 @@ fn seal<B: BTreeTrait>(tree: &mut BTree<B>, leaf: ArenaIndex) {
     tree.try_reduce_levels();
 }
 
-fn handle_lack_on_path_to_leaf<B: BTreeTrait>(tree: &mut BTree<B>, leaf: ArenaIndex) {
+fn handle_lack_on_path_to_leaf<B: BTreeTrait, M: StorageMode<B>>(tree: &mut BTree<B, M>, leaf: ArenaIndex) {
     let mut last_lack_count = 0;
     let mut lack_count;
     loop {
@@ -287,8 +288,8 @@ fn handle_lack_on_path_to_leaf<B: BTreeTrait>(tree: &mut BTree<B>, leaf: ArenaIn
     }
 }
 
-impl<'a, B: BTreeTrait> Iter<'a, B> {
-    pub fn new(tree: &'a BTree<B>, start: NodePath, inclusive_end: NodePath) -> Self {
+impl<'a, B: BTreeTrait, M: StorageMode<B>> Iter<'a, B, M> {
+    pub fn new(tree: &'a BTree<B, M>, start: NodePath, inclusive_end: NodePath) -> Self {
         Self {
             tree,
             inclusive_end,
@@ -298,7 +299,7 @@ impl<'a, B: BTreeTrait> Iter<'a, B> {
     }
 }
 
-impl<'a, B: BTreeTrait> Iterator for Iter<'a, B> {
+impl<'a, B: BTreeTrait, M: StorageMode<B>> Iterator for Iter<'a, B, M> {
     type Item = (NodePath, &'a LeafNode<B::Elem>);
 
     fn next(&mut self) -> Option<Self::Item> {

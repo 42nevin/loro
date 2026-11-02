@@ -7,7 +7,7 @@ use bytes::Bytes;
 use std::ops::Bound;
 use std::{cmp::Ordering, collections::BTreeMap};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct MemKvStore {
     mem_table: BTreeMap<Bytes, Bytes>,
     // From the oldest to the newest
@@ -17,6 +17,20 @@ pub struct MemKvStore {
     /// It's only true when using it to fuzz.
     /// Otherwise, importing and exporting GC snapshot relies on this field being false to work.
     should_encode_none: bool,
+}
+
+impl Clone for MemKvStore {
+    fn clone(&self) -> Self {
+        #[cfg(feature = "clone_work")]
+        crate::clone_work::store_clone(self.mem_table.len());
+        Self {
+            mem_table: self.mem_table.clone(),
+            ss_table: self.ss_table.clone(),
+            block_size: self.block_size,
+            compression_type: self.compression_type,
+            should_encode_none: self.should_encode_none,
+        }
+    }
 }
 
 pub struct MemKvConfig {

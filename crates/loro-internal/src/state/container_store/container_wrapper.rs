@@ -55,7 +55,7 @@ struct DecodedHeader {
     payload_offset: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum LazyDecodedValue {
     Value(LoroValue),
     Text {
@@ -143,6 +143,38 @@ impl LazyDecodedValue {
 }
 
 impl ContainerWrapper {
+    /// Detach a shared slot within the same owner, preserving its observable
+    /// version and cache-queue state. All lazy cells become private copies.
+    pub(super) fn clone_in_owner(&self) -> Self {
+        let data = match &self.data {
+            ContainerData::State(state) => ContainerData::State(match state {
+                State::ListState(s) => State::ListState(s.clone()),
+                State::MovableListState(s) => State::MovableListState(s.clone()),
+                State::MapState(s) => State::MapState(s.clone()),
+                State::RichtextState(s) => State::RichtextState(s.clone()),
+                State::TreeState(s) => State::TreeState(s.clone()),
+                #[cfg(feature = "counter")]
+                State::CounterState(s) => State::CounterState(s.clone()),
+                State::UnknownState(s) => State::UnknownState(s.clone()),
+            }),
+            ContainerData::Lazy(lazy) => ContainerData::Lazy(Box::new(LazyContainerData {
+                bytes: lazy.bytes.clone(),
+                value: lazy.value.clone(),
+                bytes_offset_for_value: lazy.bytes_offset_for_value,
+                bytes_offset_for_state: lazy.bytes_offset_for_state,
+            })),
+        };
+        Self {
+            depth: self.depth,
+            kind: self.kind,
+            parent: self.parent.clone(),
+            data,
+            flushed: self.flushed,
+            in_value_cache_queue: self.in_value_cache_queue,
+            value_cache_referenced: self.value_cache_referenced,
+        }
+    }
+
     pub(super) fn fork_cow(&self, config: &crate::configure::Configure) -> Self {
         let data = match &self.data {
             ContainerData::State(state) => ContainerData::State(state.fork(config)),
@@ -613,6 +645,9 @@ impl ContainerWrapper {
         })
     }
 
+    // Persistent lazy-value consumers must route through InnerStore's tracked
+    // read boundary. Its bounded queue owns eviction and branch-cache reset;
+    // raw full-state/diagnostic wrapper iteration is not that read boundary.
     fn decode_value(&mut self, idx: ContainerIdx, ctx: ContainerCreationContext) -> LoroResult<()> {
         if matches!(self.data, ContainerData::State(_)) {
             return Ok(());

@@ -10,10 +10,16 @@ pub(crate) use heapless::Vec as HeaplessVec;
 use itertools::Itertools;
 use rle::{CanRemove, TryInsert};
 use rustc_hash::{FxHashMap, FxHashSet};
-use thunderdome::Arena;
+use storage::ArenaStorage;
+pub use storage::{Owned, StorageMode};
+#[doc(hidden)]
+pub mod storage;
 use thunderdome::Index as RawArenaIndex;
 
 pub use generic_impl::*;
+
+#[cfg(feature = "clone_work")]
+pub use thunderdome::clone_work;
 
 use crate::rle::{HasLength, Mergeable, Sliceable};
 
@@ -59,18 +65,29 @@ pub trait Query<B: BTreeTrait> {
     fn confirm_elem(&mut self, q: &Self::QueryArg, elem: &B::Elem) -> (usize, bool);
 }
 
-pub struct BTree<B: BTreeTrait> {
+/// Explicitly opts a tree into shared immutable pages. Implementors must ensure
+/// BOTH elements and cache values cannot be mutated through shared references,
+/// including any reachable references or interior cells. Clone + Sync alone
+/// does not establish this semantic contract. The default Owned tree imposes
+/// no such restriction.
+pub trait CowBTreeTrait: BTreeTrait<Elem: Clone + Send + Sync, Cache: Send + Sync> {}
+
+/// A tree with explicit immutable-page sharing and path-copying mutations.
+pub type CowBTree<B> = BTree<B, storage::Cow>;
+
+pub struct BTree<B: BTreeTrait, M: StorageMode<B> = Owned> {
     /// internal nodes
-    in_nodes: Arena<Node<B>>,
+    in_nodes: M::Internal,
     /// leaf nodes
-    leaf_nodes: Arena<LeafNode<B::Elem>>,
+    leaf_nodes: M::Leaves,
     /// root is always a internal node
     /// TODO: we may use a constant as root index
     root: ArenaIndex,
     root_cache: B::Cache,
 }
 
-impl<Elem: Clone, B: BTreeTrait<Elem = Elem>> Clone for BTree<B> {
+impl<Elem: Clone, B: BTreeTrait<Elem = Elem>, M: StorageMode<B>> Clone for BTree<B, M>
+where M::Internal: Clone, M::Leaves: Clone {
     fn clone(&self) -> Self {
         Self {
             in_nodes: self.in_nodes.clone(),
@@ -208,7 +225,7 @@ impl<'a, Elem> ElemSlice<'a, Elem> {
 impl QueryResult {
     pub fn elem<'b, Elem: Debug, B: BTreeTrait<Elem = Elem>>(
         &self,
-        tree: &'b BTree<B>,
+        tree: &'b BTree<B, impl StorageMode<B>>,
     ) -> Option<&'b Elem> {
         tree.leaf_nodes.get(self.cursor().leaf.0).map(|x| &x.elem)
     }
@@ -291,10 +308,10 @@ impl SplittedLeaves {
     }
 }
 
-impl<Cache: Debug, Elem: Debug, B: BTreeTrait<Elem = Elem, Cache = Cache>> Debug for BTree<B> {
+impl<Cache: Debug, Elem: Debug, B: BTreeTrait<Elem = Elem, Cache = Cache>, M: StorageMode<B>> Debug for BTree<B, M> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        fn fmt_node<Cache: Debug, Elem: Debug, B: BTreeTrait<Elem = Elem>>(
-            tree: &BTree<B>,
+        fn fmt_node<Cache: Debug, Elem: Debug, B: BTreeTrait<Elem = Elem>, M: StorageMode<B>>(
+            tree: &BTree<B, M>,
             node_idx: ArenaIndex,
             f: &mut core::fmt::Formatter<'_>,
             indent_size: usize,
@@ -311,7 +328,7 @@ impl<Cache: Debug, Elem: Debug, B: BTreeTrait<Elem = Elem, Cache = Cache>> Debug
                                 "{} Arena({:?}) Cache: {:?}\n",
                                 child_node.parent_slot, &child.arena, &child.cache
                             ))?;
-                            fmt_node::<Cache, Elem, B>(tree, child.arena, f, indent_size + 1)?;
+                            fmt_node::<Cache, Elem, B, M>(tree, child.arena, f, indent_size + 1)?;
                         } else {
                             let node = tree.get_leaf(child.arena);
                             f.write_fmt(format_args!(
@@ -339,7 +356,7 @@ impl<Cache: Debug, Elem: Debug, B: BTreeTrait<Elem = Elem, Cache = Cache>> Debug
             "Root Arena({:?}) Cache: {:?}\n",
             &self.root, &self.root_cache
         ))?;
-        fmt_node::<Cache, Elem, B>(self, self.root, f, 1)
+        fmt_node::<Cache, Elem, B, M>(self, self.root, f, 1)
     }
 }
 
@@ -475,12 +492,20 @@ struct LackInfo {
 }
 
 impl<B: BTreeTrait> BTree<B> {
-    pub fn new() -> Self {
-        let mut arena = Arena::new();
+    pub fn new() -> Self { Self::new_in_mode() }
+}
+
+impl<B: CowBTreeTrait> BTree<B, storage::Cow> {
+    pub fn new_cow() -> Self { Self::new_in_mode() }
+}
+
+impl<B: BTreeTrait, M: StorageMode<B>> BTree<B, M> {
+    fn new_in_mode() -> Self {
+        let mut arena = M::Internal::new();
         let root = arena.insert(Node::new());
         Self {
             in_nodes: arena,
-            leaf_nodes: Arena::new(),
+            leaf_nodes: M::Leaves::new(),
             root: ArenaIndex::Internal(root),
             root_cache: B::Cache::default(),
         }
@@ -1608,11 +1633,11 @@ impl<B: BTreeTrait> BTree<B> {
         })
     }
 
-    pub fn drain(&mut self, range: Range<QueryResult>) -> iter::Drain<'_, B> {
+    pub fn drain(&mut self, range: Range<QueryResult>) -> iter::Drain<'_, B, M> {
         iter::Drain::new(self, Some(range.start), Some(range.end))
     }
 
-    pub fn drain_by_query<Q: Query<B>>(&mut self, range: Range<Q::QueryArg>) -> iter::Drain<'_, B> {
+    pub fn drain_by_query<Q: Query<B>>(&mut self, range: Range<Q::QueryArg>) -> iter::Drain<'_, B, M> {
         let start = self.query::<Q>(&range.start);
         let end = self.query::<Q>(&range.end);
         iter::Drain::new(self, start, end)
@@ -2420,10 +2445,10 @@ impl<B: BTreeTrait> BTree<B> {
     }
 
     /// This method will release the memory back to OS.
-    /// Currently, it's just `*self = Self::new()`
+    /// Replaces this tree with an empty tree in the same storage mode.
     #[inline(always)]
     pub fn clear(&mut self) {
-        *self = Self::new();
+        *self = Self::new_in_mode();
     }
 
     #[inline(always)]
@@ -2765,7 +2790,7 @@ fn add_leaf_dirty_map<T>(leaf: ArenaIndex, dirty_map: &mut LeafDirtyMap<T>, leaf
     dirty_map.insert(leaf, leaf_diff);
 }
 
-impl<B: BTreeTrait> BTree<B> {
+impl<B: BTreeTrait, M: StorageMode<B>> BTree<B, M> {
     pub fn check(&self) {
         // check cache
         let mut leaf_level = None;
@@ -2849,9 +2874,9 @@ impl<B: BTreeTrait> BTree<B> {
     }
 }
 
-impl<B: BTreeTrait, T: Into<B::Elem>> FromIterator<T> for BTree<B> {
+impl<B: BTreeTrait, T: Into<B::Elem>, M: StorageMode<B>> FromIterator<T> for BTree<B, M> {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        let mut tree = Self::new();
+        let mut tree = Self::new_in_mode();
         let iter = iter.into_iter();
         let min_size = iter.size_hint().0;
         tree.leaf_nodes.reserve(min_size);
@@ -2977,9 +3002,9 @@ struct SplitInfo {
     new_leaf: Option<ArenaIndex>,
 }
 
-impl<B: BTreeTrait> Default for BTree<B> {
+impl<B: BTreeTrait, M: StorageMode<B>> Default for BTree<B, M> {
     fn default() -> Self {
-        Self::new()
+        Self::new_in_mode()
     }
 }
 

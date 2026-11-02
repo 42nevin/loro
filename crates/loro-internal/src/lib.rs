@@ -3,6 +3,9 @@
 //!
 //!
 //!
+// Persistent slot and richtext ownership add nested types to the existing
+// Send/Sync proofs; retain those proofs with a bounded compiler recursion limit.
+#![recursion_limit = "256"]
 #![deny(clippy::undocumented_unsafe_blocks)]
 #![allow(unused_assignments)]
 #![allow(clippy::uninlined_format_args)]
@@ -64,6 +67,9 @@ pub mod oplog;
 pub mod subscription;
 pub mod txn;
 pub mod version;
+
+#[cfg(any(test, feature = "test_utils"))]
+pub mod cow_work;
 
 mod error;
 #[cfg(feature = "test_utils")]

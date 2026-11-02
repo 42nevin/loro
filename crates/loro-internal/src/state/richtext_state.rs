@@ -43,6 +43,11 @@ struct Pos {
 }
 
 impl RichtextState {
+    #[cfg(test)]
+    pub(crate) fn config_for_test(&self) -> &Arc<RwLock<StyleConfigMap>> {
+        &self.config
+    }
+
     #[inline]
     pub fn new(idx: ContainerIdx, config: Arc<RwLock<StyleConfigMap>>) -> Self {
         Self {

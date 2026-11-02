@@ -16,6 +16,7 @@ repository = "https://github.com/loro-dev/generic-btree"
 # crates.io via [patch.crates.io] in the root Cargo.toml.
 
 [features]
+clone_work = ["thunderdome/clone_work"]
 test = []
 
 [lib]
@@ -23,6 +24,7 @@ name = "generic_btree"
 path = "src/lib.rs"
 
 [dependencies]
+im = "15.1.0"
 arref = "0.1.0"
 heapless = "0.9.1"
 itertools = "0.11.0"

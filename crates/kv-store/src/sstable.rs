@@ -31,13 +31,27 @@ const MAX_BLOCK_NUM: u32 = 10_000_000;
 /// │ ─ ─ ─ ─ ─ ─ ─ ┘─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─  │
 /// └──────────────────────────────────────────────────────────────────────────────────────────┘
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct BlockMeta {
     offset: usize,
     is_large: bool,
     compression_type: CompressionType,
     first_key: Bytes,
     last_key: Option<Bytes>,
+}
+
+impl Clone for BlockMeta {
+    fn clone(&self) -> Self {
+        #[cfg(feature = "clone_work")]
+        crate::clone_work::meta_clone();
+        Self {
+            offset: self.offset,
+            is_large: self.is_large,
+            compression_type: self.compression_type,
+            first_key: self.first_key.clone(),
+            last_key: self.last_key.clone(),
+        }
+    }
 }
 
 impl BlockMeta {
@@ -311,7 +325,7 @@ impl SsTableBuilder {
             data: Bytes::from(buf),
             first_key,
             last_key,
-            meta: self.meta,
+            meta: self.meta.into(),
             meta_offset: meta_offset as usize,
             block_cache: new_block_cache(),
         }
@@ -331,6 +345,8 @@ impl quick_cache::Weighter<usize, Arc<Block>> for BlockDataWeighter {
 }
 
 fn new_block_cache() -> BlockCache {
+    #[cfg(feature = "clone_work")]
+    crate::clone_work::cache_created();
     let estimated_blocks =
         (BLOCK_CACHE_MAX_BYTES / crate::MemKvStore::DEFAULT_BLOCK_SIZE as u64) as usize;
     BlockCache::with_weighter(estimated_blocks, BLOCK_CACHE_MAX_BYTES, BlockDataWeighter)
@@ -342,13 +358,16 @@ pub struct SsTable {
     data: Bytes,
     pub(crate) first_key: Bytes,
     pub(crate) last_key: Bytes,
-    meta: Vec<BlockMeta>,
+    // Completed table metadata is immutable; the mutable block cache stays owner-local.
+    meta: Arc<[BlockMeta]>,
     meta_offset: usize,
     block_cache: BlockCache,
 }
 
 impl Clone for SsTable {
     fn clone(&self) -> Self {
+        #[cfg(feature = "clone_work")]
+        crate::clone_work::table_clone();
         Self {
             data: self.data.clone(),
             first_key: self.first_key.clone(),
@@ -451,7 +470,7 @@ impl SsTable {
             data: bytes,
             first_key,
             last_key,
-            meta,
+            meta: meta.into(),
             meta_offset,
             block_cache: new_block_cache(),
         };
@@ -1292,6 +1311,41 @@ mod test {
         assert_eq!(v2, Bytes::from_static(b"value2"));
         assert!(Iterator::next(&mut iter).is_none());
         assert!(DoubleEndedIterator::next_back(&mut iter).is_none());
+    }
+
+    #[test]
+    fn shared_block_metadata_keeps_decoded_caches_owner_local() {
+        let mut builder = SsTableBuilder::new(32, CompressionType::None, true);
+        for i in 0..16 {
+            builder.add(Bytes::from(format!("key-{i:02}")), Bytes::from(format!("value-{i:02}")));
+        }
+        let parent = builder.build();
+        assert!(parent.meta_len() > 1);
+        let bytes = parent.export_all();
+        let parent_block = parent.read_block_cached(0);
+        let parent_weight = parent.cached_block_bytes();
+        assert!(parent_weight > 0);
+        let child = parent.clone();
+        assert!(Arc::ptr_eq(&parent.meta, &child.meta));
+        assert_eq!(child.cached_block_bytes(), 0);
+        let child_block = child.read_block_cached(0);
+        assert!(!Arc::ptr_eq(&parent_block, &child_block));
+        assert!(child.cached_block_bytes() > 0);
+        assert_eq!(parent.cached_block_bytes(), parent_weight);
+        assert_eq!(child.export_all(), bytes);
+        let mut damaged = bytes.to_vec();
+        damaged[11] ^= 0x80;
+        assert!(SsTable::import_all(damaged.into(), true).is_err());
+        for i in 0..16 {
+            let key = format!("key-{i:02}");
+            let value = Some(Bytes::from(format!("value-{i:02}")));
+            assert_eq!(parent.get(key.as_bytes()), value);
+            assert_eq!(child.get(key.as_bytes()), value);
+        }
+        drop(parent);
+        assert_eq!(child.get(b"key-15"), Some(Bytes::from_static(b"value-15")));
+        let reopened = SsTable::import_all(bytes, true).unwrap();
+        assert_eq!(child.export_all(), reopened.export_all());
     }
 
     #[test]

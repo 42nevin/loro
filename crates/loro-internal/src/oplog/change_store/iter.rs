@@ -1,24 +1,21 @@
 #![allow(dead_code)]
 
-use std::{
-    collections::{BinaryHeap, VecDeque},
-    sync::Arc,
-};
+use std::collections::{BinaryHeap, VecDeque};
 
 use loro_common::{CounterSpan, HasIdSpan};
 
 use crate::{OpLog, VersionVector};
 
-use super::{BlockChangeRef, ChangesBlock};
+use super::BlockChangeRef;
 
 pub(crate) struct PeerChangesIter {
-    blocks: VecDeque<Arc<ChangesBlock>>,
+    blocks: VecDeque<super::BlockRef>,
     change_index: usize,
     counter_range: CounterSpan,
 }
 
 impl PeerChangesIter {
-    fn new_change_iter_rev(mut changes: VecDeque<Arc<ChangesBlock>>, counter: CounterSpan) -> Self {
+    fn new_change_iter_rev(mut changes: VecDeque<super::BlockRef>, counter: CounterSpan) -> Self {
         let mut index = changes
             .back()
             .map(|x| x.content().len_changes().saturating_sub(1))

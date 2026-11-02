@@ -21,7 +21,6 @@ use loro_common::{
     LoroError, LoroResult, PeerID, ID,
 };
 use loro_kv_store::{mem_store::MemKvConfig, MemKvStore};
-use once_cell::sync::OnceCell;
 use rle::{HasLength, Mergable, RlePush, RleVec, Sliceable};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::atomic::AtomicI64;
@@ -159,7 +158,7 @@ struct ChangeStoreInner {
     /// The last version of the shallow history.
     start_frontiers: Frontiers,
     /// It's more like a parsed cache for binary_kv.
-    mem_parsed_kv: BTreeMap<ID, Arc<ChangesBlock>>,
+    mem_parsed_kv: im::OrdMap<ID, BlockRef>,
     /// Set by [`ChangeStore::retire`]: the op log replaced this store, so loading from it
     /// must not register anything in the arena any more.
     retired: bool,
@@ -229,7 +228,36 @@ impl ChangeStoreRollback {
     }
 }
 
-#[derive(Debug, Clone)]
+/// Reference to immutable block facts. Mutating methods still detach the
+/// underlying Arc before replacing content; this wrapper observes map-path
+/// reference copies independently from block/header value copies.
+#[derive(Debug)]
+pub(crate) struct BlockRef(Arc<ChangesBlock>);
+impl BlockRef {
+    fn new(block: ChangesBlock) -> Self {
+        Self(Arc::new(block))
+    }
+}
+impl Clone for BlockRef {
+    fn clone(&self) -> Self {
+        #[cfg(any(test, feature = "test_utils"))]
+        crate::cow_work::change_block_ref_clone();
+        Self(self.0.clone())
+    }
+}
+impl std::ops::Deref for BlockRef {
+    type Target = Arc<ChangesBlock>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for BlockRef {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+#[derive(Debug)]
 pub(crate) struct ChangesBlock {
     peer: PeerID,
     counter_range: (Counter, Counter),
@@ -254,7 +282,23 @@ pub(crate) enum ChangesBlockContent {
 #[derive(Clone)]
 pub(crate) struct ChangesBlockBytes {
     bytes: Bytes,
-    header: OnceCell<Arc<ChangesBlockHeader>>,
+    header: Option<Arc<ChangesBlockHeader>>,
+}
+
+impl Clone for ChangesBlock {
+    fn clone(&self) -> Self {
+        #[cfg(any(test, feature = "test_utils"))]
+        crate::cow_work::change_block_clone();
+        Self {
+            peer: self.peer,
+            counter_range: self.counter_range,
+            lamport_range: self.lamport_range,
+            estimated_size: self.estimated_size,
+            flushed: self.flushed,
+            content: self.content.clone(),
+            parsed_extent: self.parsed_extent,
+        }
+    }
 }
 
 pub const START_VV_KEY: &[u8] = b"sv";
@@ -268,7 +312,7 @@ impl ChangeStore {
             inner: Arc::new(Mutex::new(ChangeStoreInner {
                 start_vv: ImVersionVector::new(),
                 start_frontiers: Frontiers::default(),
-                mem_parsed_kv: BTreeMap::new(),
+                mem_parsed_kv: im::OrdMap::new(),
                 retired: false,
             })),
             arena: a.clone(),
@@ -434,7 +478,9 @@ impl ChangeStore {
     /// Decode an update block. Changes the doc already has are kept; see
     /// [`Self::decode_snapshot_for_updates`].
     pub(crate) fn decode_block_bytes(bytes: Bytes, arena: &SharedArena) -> LoroResult<Vec<Change>> {
-        ChangesBlockBytes::new(bytes).parse(arena)
+        ChangesBlockBytes::new(bytes)
+            .parse(arena)
+            .map(|(changes, _)| changes)
     }
 
     /// Rolls back the store and the arena (to `arena`, the checkpoint taken when the import
@@ -467,14 +513,19 @@ impl ChangeStore {
         // The name set may already include names from changes this rollback removes. That is
         // fine: stale names only make `old_history_may_touch_root_names` conservatively true.
         let mut touched_peers = FxHashSet::default();
-        inner.mem_parsed_kv.retain(|id, _| {
-            let old_end = rollback.old_vv.get(&id.peer).copied().unwrap_or(0);
-            let keep = id.counter < old_end;
-            if !keep {
-                touched_peers.insert(id.peer);
-            }
-            keep
-        });
+        let removed: Vec<_> = inner
+            .mem_parsed_kv
+            .keys()
+            .copied()
+            .filter(|id| {
+                let old_end = rollback.old_vv.get(&id.peer).copied().unwrap_or(0);
+                id.counter >= old_end
+            })
+            .collect();
+        for id in removed {
+            touched_peers.insert(id.peer);
+            inner.mem_parsed_kv.remove(&id);
+        }
 
         for (id, shape) in rollback.blocks_before_mutation {
             touched_peers.insert(id.peer);
@@ -514,9 +565,15 @@ impl ChangeStore {
         // continuous"). Blocks that are flushed are identical to their KV copy, so
         // evict them; they are reloaded on demand.
         if !touched_peers.is_empty() {
-            inner
+            let removed: Vec<_> = inner
                 .mem_parsed_kv
-                .retain(|id, block| !block.flushed || !touched_peers.contains(&id.peer));
+                .iter()
+                .filter(|(id, block)| block.flushed && touched_peers.contains(&id.peer))
+                .map(|(id, _)| *id)
+                .collect();
+            for id in removed {
+                inner.mem_parsed_kv.remove(&id);
+            }
         }
     }
 
@@ -543,13 +600,19 @@ impl ChangeStore {
     }
 
     fn rollback_arena_in(&self, inner: &mut ChangeStoreInner, arena: SharedArenaRollback) {
-        for block in inner.mem_parsed_kv.values_mut() {
-            if let ChangesBlockContent::Both(_, bytes) = &block.content {
-                if !arena.keeps(block.parsed_extent) {
-                    let bytes = bytes.clone();
-                    Arc::make_mut(block).content = ChangesBlockContent::Bytes(bytes);
+        let changed: Vec<_> = inner
+            .mem_parsed_kv
+            .iter()
+            .filter_map(|(id, block)| match &block.content {
+                ChangesBlockContent::Both(_, bytes) if !arena.keeps(block.parsed_extent) => {
+                    Some((*id, bytes.clone()))
                 }
-            }
+                _ => None,
+            })
+            .collect();
+        for (id, bytes) in changed {
+            let block = inner.mem_parsed_kv.get_mut(&id).expect("selected block");
+            Arc::make_mut(block).content = ChangesBlockContent::Bytes(bytes);
         }
         self.arena.rollback(arena);
     }
@@ -578,10 +641,12 @@ impl ChangeStore {
     pub fn visit_all_changes(&self, f: &mut dyn FnMut(&Change)) {
         self.ensure_block_loaded_in_range(Bound::Unbounded, Bound::Unbounded);
         let mut inner = self.inner.lock();
-        for (id, block) in inner.mem_parsed_kv.iter_mut() {
+        let keys: Vec<_> = inner.mem_parsed_kv.keys().copied().collect();
+        for id in keys {
+            let block = inner.mem_parsed_kv.get_mut(&id).expect("selected block");
             if let Err(err) = block.ensure_changes(&self.arena) {
                 warn!(block_id = ?id, ?err, "failed to parse change block");
-                self.parse_failures.record(*id, &err);
+                self.parse_failures.record(id, &err);
                 continue;
             }
             for c in block.content.try_changes().unwrap() {
@@ -606,7 +671,7 @@ impl ChangeStore {
                     Ok(header) => header,
                     Err(_) => return RootHistoryNamesState::Invalid,
                 };
-                let Some(cids) = header.cids.get() else {
+                let Some(cids) = header.cids.as_deref() else {
                     return RootHistoryNamesState::Invalid;
                 };
                 for cid in cids.iter() {
@@ -633,12 +698,12 @@ impl ChangeStore {
                     }
                 }
                 ChangesBlockContent::Bytes(bytes) => {
-                    let header = bytes.header.get().map(|header| header.as_ref().clone());
+                    let header = bytes.header.as_ref().map(|header| header.as_ref().clone());
                     let header = match decode_cids(&bytes.bytes, header) {
                         Ok(header) => header,
                         Err(_) => return RootHistoryNamesState::Invalid,
                     };
-                    let Some(cids) = header.cids.get() else {
+                    let Some(cids) = header.cids.as_deref() else {
                         return RootHistoryNamesState::Invalid;
                     };
                     for cid in cids.iter() {
@@ -709,7 +774,7 @@ impl ChangeStore {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub(crate) fn iter_blocks(&self, id_span: IdSpan) -> Vec<(Arc<ChangesBlock>, usize, usize)> {
+    pub(crate) fn iter_blocks(&self, id_span: IdSpan) -> Vec<(BlockRef, usize, usize)> {
         if id_span.counter.start == id_span.counter.end {
             return vec![];
         }
@@ -732,19 +797,22 @@ impl ChangeStore {
             }
         }
         let start_counter = next_back.map(|(id, _)| id.counter).unwrap_or(0);
-        let ans = inner
+        let keys: Vec<_> = inner
             .mem_parsed_kv
-            .range_mut(
-                ID::new(id_span.peer, start_counter)..ID::new(id_span.peer, id_span.counter.end),
-            )
-            .filter_map(|(_id, block)| {
+            .range(ID::new(id_span.peer, start_counter)..ID::new(id_span.peer, id_span.counter.end))
+            .map(|(id, _)| *id)
+            .collect();
+        let ans = keys
+            .into_iter()
+            .filter_map(|_id| {
+                let block = inner.mem_parsed_kv.get_mut(&_id).expect("selected block");
                 if block.counter_range.1 < id_span.counter.start {
                     return None;
                 }
 
                 if let Err(err) = block.ensure_changes(&self.arena) {
                     warn!(block_id = ?_id, ?err, "failed to parse change block");
-                    self.parse_failures.record(*_id, &err);
+                    self.parse_failures.record(_id, &err);
                     return None;
                 }
                 let changes = block.content.try_changes().unwrap();
@@ -814,7 +882,7 @@ impl ChangeStore {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn get_blocks_in_range(&self, id_span: IdSpan) -> VecDeque<Arc<ChangesBlock>> {
+    pub(crate) fn get_blocks_in_range(&self, id_span: IdSpan) -> VecDeque<BlockRef> {
         let mut inner = self.inner.lock();
         let start_counter = inner
             .mem_parsed_kv
@@ -822,19 +890,22 @@ impl ChangeStore {
             .next_back()
             .map(|(id, _)| id.counter)
             .unwrap_or(0);
-        let vec = inner
+        let keys: Vec<_> = inner
             .mem_parsed_kv
-            .range_mut(
-                ID::new(id_span.peer, start_counter)..ID::new(id_span.peer, id_span.counter.end),
-            )
-            .filter_map(|(_id, block)| {
+            .range(ID::new(id_span.peer, start_counter)..ID::new(id_span.peer, id_span.counter.end))
+            .map(|(id, _)| *id)
+            .collect();
+        let vec = keys
+            .into_iter()
+            .filter_map(|_id| {
+                let block = inner.mem_parsed_kv.get_mut(&_id).expect("selected block");
                 if block.counter_range.1 < id_span.counter.start {
                     return None;
                 }
 
                 if let Err(err) = block.ensure_changes(&self.arena) {
                     warn!(block_id = ?_id, ?err, "failed to parse change block");
-                    self.parse_failures.record(*_id, &err);
+                    self.parse_failures.record(_id, &err);
                     return None;
                 }
                 Some(block.clone())
@@ -844,7 +915,7 @@ impl ChangeStore {
         vec
     }
 
-    pub(crate) fn get_block_that_contains(&self, id: ID) -> Option<Arc<ChangesBlock>> {
+    pub(crate) fn get_block_that_contains(&self, id: ID) -> Option<BlockRef> {
         self.ensure_block_loaded_in_range(Bound::Included(id), Bound::Included(id));
         let inner = self.inner.lock();
         let block = inner
@@ -861,7 +932,7 @@ impl ChangeStore {
         block
     }
 
-    pub(crate) fn get_the_last_block_of_peer(&self, peer: PeerID) -> Option<Arc<ChangesBlock>> {
+    pub(crate) fn get_the_last_block_of_peer(&self, peer: PeerID) -> Option<BlockRef> {
         let end_id = ID::new(peer, Counter::MAX);
         self.ensure_id_lte(end_id);
         let inner = self.inner.lock();
@@ -877,32 +948,18 @@ impl ChangeStore {
 
     pub fn change_num(&self) -> usize {
         self.ensure_block_loaded_in_range(Bound::Unbounded, Bound::Unbounded);
-        let mut inner = self.inner.lock();
+        let inner = self.inner.lock();
         inner
             .mem_parsed_kv
-            .iter_mut()
-            .map(|(_, block)| block.change_num())
+            .values()
+            .map(|block| block.change_num())
             .sum()
     }
 
     pub(crate) fn fork_cow(&self, arena: SharedArena, merge_interval: Arc<AtomicI64>) -> Self {
-        let mut inner = self.inner.lock().clone();
-        // The block's OnceCell header is a private read cache, not a shared page.
-        inner.mem_parsed_kv = inner
-            .mem_parsed_kv
-            .into_iter()
-            .map(|(id, block)| {
-                let mut block = (*block).clone();
-                match &mut block.content {
-                    ChangesBlockContent::Bytes(bytes) | ChangesBlockContent::Both(_, bytes) => {
-                        // An initialized header owns nested OnceCells; never share it.
-                        bytes.header = OnceCell::new();
-                    }
-                    ChangesBlockContent::Changes(_) => {}
-                }
-                (id, Arc::new(block))
-            })
-            .collect();
+        // The primary map and block payload/header facts are immutable until
+        // an owning map path is detached. No lazy cell is shared across owners.
+        let inner = self.inner.lock().clone();
         Self {
             inner: Arc::new(Mutex::new(inner)),
             arena,
@@ -930,7 +987,7 @@ impl ChangeStore {
             inner: Arc::new(Mutex::new(ChangeStoreInner {
                 start_vv: inner.start_vv.clone(),
                 start_frontiers: inner.start_frontiers.clone(),
-                mem_parsed_kv: BTreeMap::new(),
+                mem_parsed_kv: im::OrdMap::new(),
                 retired: false,
             })),
             arena,
@@ -1029,7 +1086,9 @@ fn encode_blocks_in_store<W: std::io::Write>(
     w: &mut W,
 ) {
     let mut inner = new_store.inner.lock();
-    for (_id, block) in inner.mem_parsed_kv.iter_mut() {
+    let keys: Vec<_> = inner.mem_parsed_kv.keys().copied().collect();
+    for id in keys {
+        let block = inner.mem_parsed_kv.get_mut(&id).expect("selected block");
         let bytes = block.to_bytes(arena);
         leb128::write::unsigned(w, bytes.bytes.len() as u64).unwrap();
         w.write_all(&bytes.bytes).unwrap();
@@ -1143,7 +1202,14 @@ mod mut_external_kv {
             let mut store = self.external_kv.lock();
             let mut inner = self.inner.lock();
             let mut external_vv = self.external_vv.lock();
-            for (id, block) in inner.mem_parsed_kv.iter_mut() {
+            let keys: Vec<_> = inner
+                .mem_parsed_kv
+                .iter()
+                .filter(|(_, block)| !block.flushed)
+                .map(|(id, _)| *id)
+                .collect();
+            for id in keys {
+                let block = inner.mem_parsed_kv.get_mut(&id).expect("selected block");
                 if !block.flushed {
                     let id_bytes = id.to_bytes();
                     let counter_start = external_vv.get(&id.peer).copied().unwrap_or(0);
@@ -1231,14 +1297,23 @@ mod mut_inner_kv {
             let mut inner = self.inner.lock();
 
             // try to merge with previous block
-            if let Some((_id, block)) = inner.mem_parsed_kv.range_mut(..id).next_back() {
+            let previous = inner
+                .mem_parsed_kv
+                .range(..id)
+                .next_back()
+                .map(|(id, _)| *id);
+            if let Some(_id) = previous {
+                let block = inner
+                    .mem_parsed_kv
+                    .get_mut(&_id)
+                    .expect("predecessor block");
                 if block.peer == change.id.peer {
                     if block.counter_range.1 != change.id.counter {
                         panic!("counter should be continuous")
                     }
 
                     if let Some(rollback) = &mut rollback {
-                        rollback.record_block_before_mutation(*_id, block);
+                        rollback.record_block_before_mutation(_id, block);
                     }
 
                     match block.push_change(
@@ -1266,7 +1341,7 @@ mod mut_inner_kv {
 
             inner
                 .mem_parsed_kv
-                .insert(id, Arc::new(ChangesBlock::new(change, &self.arena)));
+                .insert(id, BlockRef::new(ChangesBlock::new(change, &self.arena)));
             drop(inner);
             debug_assert!(self.get_change(id).is_some());
         }
@@ -1290,7 +1365,7 @@ mod mut_inner_kv {
             let mut inner = self.inner.lock();
             let mut iter = inner
                 .mem_parsed_kv
-                .range_mut(ID::new(idlp.peer, 0)..ID::new(idlp.peer, i32::MAX));
+                .range(ID::new(idlp.peer, 0)..ID::new(idlp.peer, i32::MAX));
 
             // This won't change, we only adjust upper_bound
             let mut lower_bound = 0;
@@ -1330,7 +1405,10 @@ mod mut_inner_kv {
                                 break;
                             }
 
-                            // Found the block
+                            // Found the block. End the read-only iterator
+                            // before detaching this owner's selected map path.
+                            drop(iter);
+                            let block = inner.mem_parsed_kv.get_mut(&id).expect("selected block");
                             if let Err(err) = block.ensure_changes(&self.arena) {
                                 warn!(block_id = ?id, ?err, "failed to parse change block");
                                 self.parse_failures.record(id, &err);
@@ -1362,7 +1440,7 @@ mod mut_inner_kv {
                             let mid_bound = (lower_bound + upper_bound) / 2;
                             iter = inner
                                 .mem_parsed_kv
-                                .range_mut(ID::new(idlp.peer, 0)..ID::new(idlp.peer, mid_bound));
+                                .range(ID::new(idlp.peer, 0)..ID::new(idlp.peer, mid_bound));
                         } else {
                             // Test whether we need to switch to binary search by measuring the gap
                             if block.lamport_range.0 - idlp.lamport > MAX_BLOCK_SIZE as Lamport * 8
@@ -1370,9 +1448,9 @@ mod mut_inner_kv {
                                 // Use binary search to find the block
                                 upper_bound = id.counter;
                                 let mid_bound = (lower_bound + upper_bound) / 2;
-                                iter = inner.mem_parsed_kv.range_mut(
-                                    ID::new(idlp.peer, 0)..ID::new(idlp.peer, mid_bound),
-                                );
+                                iter = inner
+                                    .mem_parsed_kv
+                                    .range(ID::new(idlp.peer, 0)..ID::new(idlp.peer, mid_bound));
                                 is_binary_searching = true;
                             }
 
@@ -1388,7 +1466,7 @@ mod mut_inner_kv {
                         lower_bound = mid_bound;
                         if upper_bound - lower_bound <= MAX_BLOCK_SIZE as i32 {
                             // If they are too close, we can just scan the range
-                            iter = inner.mem_parsed_kv.range_mut(
+                            iter = inner.mem_parsed_kv.range(
                                 ID::new(idlp.peer, lower_bound)..ID::new(idlp.peer, upper_bound),
                             );
                             is_binary_searching = false;
@@ -1396,7 +1474,7 @@ mod mut_inner_kv {
                             let mid_bound = (lower_bound + upper_bound) / 2;
                             iter = inner
                                 .mem_parsed_kv
-                                .range_mut(ID::new(idlp.peer, 0)..ID::new(idlp.peer, mid_bound));
+                                .range(ID::new(idlp.peer, 0)..ID::new(idlp.peer, mid_bound));
                         }
                     }
                 }
@@ -1474,7 +1552,7 @@ mod mut_inner_kv {
 
             let (block_id, bytes) = external_block.unwrap();
             let mut block = match ChangesBlock::from_bytes(bytes) {
-                Ok(block) => Arc::new(block),
+                Ok(block) => BlockRef::new(block),
                 Err(err) => {
                     warn!(?block_id, ?err, "failed to decode external change block");
                     self.parse_failures.record(block_id, &err);
@@ -1644,7 +1722,7 @@ mod mut_inner_kv {
             }
         }
 
-        fn get_parsed_block(&self, id: ID) -> Option<Arc<ChangesBlock>> {
+        fn get_parsed_block(&self, id: ID) -> Option<BlockRef> {
             match Self::load_parsed_block(&self.inner, &self.external_kv, &self.arena, id) {
                 Ok(block) => block,
                 Err((block_id, err)) => {
@@ -1662,7 +1740,7 @@ mod mut_inner_kv {
             external_kv: &Mutex<dyn KvStore>,
             arena: &SharedArena,
             id: ID,
-        ) -> Result<Option<Arc<ChangesBlock>>, (ID, LoroError)> {
+        ) -> Result<Option<BlockRef>, (ID, LoroError)> {
             // A cached block needs only `inner`.
             {
                 let mut inner = inner.lock();
@@ -1699,7 +1777,7 @@ mod mut_inner_kv {
             if block.counter_range.1 <= id.counter {
                 return Ok(None);
             }
-            let mut block = Arc::new(block);
+            let mut block = BlockRef::new(block);
             block.ensure_changes(arena).map_err(|err| (block_id, err))?;
             inner.mem_parsed_kv.insert(block_id, block.clone());
             Ok(Some(block))
@@ -1710,14 +1788,18 @@ mod mut_inner_kv {
             inner: &mut ChangeStoreInner,
             arena: &SharedArena,
             id: ID,
-        ) -> Option<Result<Arc<ChangesBlock>, (ID, LoroError)>> {
-            let (block_id, block) = inner.mem_parsed_kv.range_mut(..=id).next_back()?;
+        ) -> Option<Result<BlockRef, (ID, LoroError)>> {
+            let block_id = *inner.mem_parsed_kv.range(..=id).next_back()?.0;
+            let block = inner
+                .mem_parsed_kv
+                .get_mut(&block_id)
+                .expect("predecessor block");
             if block.peer != id.peer || block.counter_range.1 <= id.counter {
                 return None;
             }
             Some(match block.ensure_changes(arena) {
                 Ok(()) => Ok(block.clone()),
-                Err(err) => Err((*block_id, err)),
+                Err(err) => Err((block_id, err)),
             })
         }
 
@@ -1763,7 +1845,7 @@ mod mut_inner_kv {
                             continue;
                         }
                     };
-                    inner.mem_parsed_kv.insert(id, Arc::new(block));
+                    inner.mem_parsed_kv.insert(id, BlockRef::new(block));
                 }
             }
 
@@ -1800,7 +1882,9 @@ mod mut_inner_kv {
                         return;
                     }
                 };
-                inner.mem_parsed_kv.insert(next_back_id, Arc::new(block));
+                inner
+                    .mem_parsed_kv
+                    .insert(next_back_id, BlockRef::new(block));
             }
         }
     }
@@ -1816,7 +1900,7 @@ pub(crate) struct BatchDecodeInfo {
 
 #[derive(Clone, Debug)]
 pub struct BlockChangeRef {
-    block: Arc<ChangesBlock>,
+    block: BlockRef,
     change_index: usize,
 }
 
@@ -1844,7 +1928,7 @@ impl BlockChangeRef {
 
 #[derive(Clone, Debug)]
 pub(crate) struct BlockOpRef {
-    pub block: Arc<ChangesBlock>,
+    pub block: BlockRef,
     pub change_index: usize,
     pub op_index: usize,
 }
@@ -1868,11 +1952,11 @@ impl BlockOpRef {
 impl ChangesBlock {
     fn from_bytes(bytes: Bytes) -> LoroResult<Self> {
         let len = bytes.len();
-        let bytes = ChangesBlockBytes::new(bytes);
+        let mut bytes = ChangesBlockBytes::new(bytes);
         bytes.ensure_header()?;
         let header = bytes
             .header
-            .get()
+            .as_ref()
             .expect("header should be initialized after ensure_header");
         let peer = header.peer;
         let counter_range = (
@@ -2045,8 +2129,7 @@ impl ChangesBlock {
             ChangesBlockContent::Changes(_) => Ok(()),
             ChangesBlockContent::Both(_, _) => Ok(()),
             ChangesBlockContent::Bytes(bytes) => {
-                let changes = bytes.parse(a)?;
-                let b = bytes.clone();
+                let (changes, b) = bytes.parse(a)?;
                 let this = Arc::make_mut(self);
                 this.content = ChangesBlockContent::Both(Arc::new(changes), b);
                 this.parsed_extent = a.extent();
@@ -2118,7 +2201,7 @@ impl ChangesBlockContent {
                         cnt: change.id.counter,
                         lamport: change.lamport,
                         deps: change.deps.clone(),
-                        vv: OnceCell::new(),
+                        vv: None,
                         has_succ: false,
                         len: change.atom_len(),
                     }
@@ -2128,8 +2211,7 @@ impl ChangesBlockContent {
                 }
             }
             ChangesBlockContent::Bytes(b) => {
-                b.ensure_header().unwrap();
-                let header = b.header.get().unwrap();
+                let header = b.read_header().unwrap();
                 let n = header.n_changes;
                 for i in 0..n {
                     let new_node = AppDagNodeInner {
@@ -2137,7 +2219,7 @@ impl ChangesBlockContent {
                         cnt: header.counters[i],
                         lamport: header.lamports[i],
                         deps: header.deps_groups[i].clone(),
-                        vv: OnceCell::new(),
+                        vv: None,
                         has_succ: false,
                         len: (header.counters[i + 1] - header.counters[i]) as usize,
                     }
@@ -2160,7 +2242,7 @@ impl ChangesBlockContent {
                 self.changes_mut(a)
             }
             ChangesBlockContent::Bytes(bytes) => {
-                let changes = bytes.parse(a)?;
+                let (changes, _) = bytes.parse(a)?;
                 *self = ChangesBlockContent::Changes(Arc::new(changes));
                 self.changes_mut(a)
             }
@@ -2206,51 +2288,58 @@ impl std::fmt::Debug for ChangesBlockContent {
 impl ChangesBlockBytes {
     fn new(bytes: Bytes) -> Self {
         Self {
-            header: OnceCell::new(),
+            header: None,
             bytes,
         }
     }
 
-    fn ensure_header(&self) -> LoroResult<()> {
-        self.header
-            .get_or_try_init(|| decode_header(&self.bytes).map(Arc::new))?;
+    fn ensure_header(&mut self) -> LoroResult<()> {
+        if self.header.is_none() {
+            self.header = Some(Arc::new(decode_header(&self.bytes)?));
+        }
         Ok(())
     }
 
-    fn parse(&self, a: &SharedArena) -> LoroResult<Vec<Change>> {
-        self.ensure_header()?;
-        let ans: Vec<Change> = decode_block(&self.bytes, a, self.header.get().map(|h| h.as_ref()))?;
-        for c in ans.iter() {
-            // PERF: This can be made faster (low priority)
-            register_container_and_parent_link(a, c)
+    fn read_header(&self) -> LoroResult<Arc<ChangesBlockHeader>> {
+        match &self.header {
+            Some(header) => Ok(header.clone()),
+            None => decode_header(&self.bytes).map(Arc::new),
         }
+    }
 
-        Ok(ans)
+    // Enrichment belongs to the returned wrapper. A failed decode never
+    // publishes partial header facts into this owner or any sibling. The
+    // existing caller's arena rollback still owns any decoding side effects.
+    fn parse(&self, a: &SharedArena) -> LoroResult<(Vec<Change>, Self)> {
+        let mut enriched = self.clone();
+        enriched.ensure_header()?;
+        let header = Arc::make_mut(enriched.header.as_mut().expect("base header"));
+        let changes = decode_block(&enriched.bytes, a, Some(header))?;
+        for c in changes.iter() {
+            register_container_and_parent_link(a, c);
+        }
+        Ok((changes, enriched))
     }
 
     fn serialize(changes: &[Change], a: &SharedArena) -> Self {
         let bytes = encode_block(changes, a);
-        // TODO: Perf we can calculate header directly without parsing the bytes
-        let bytes = ChangesBlockBytes::new(Bytes::from(bytes));
+        let mut bytes = ChangesBlockBytes::new(Bytes::from(bytes));
         bytes.ensure_header().unwrap();
         bytes
     }
 
     fn lamport_range(&mut self) -> LoroResult<(Lamport, Lamport)> {
-        if let Some(header) = self.header.get() {
+        if let Some(header) = &self.header {
             Ok((header.lamports[0], *header.lamports.last().unwrap()))
         } else {
             decode_block_range(&self.bytes).map(|(_, lamport_range)| lamport_range)
         }
     }
 
-    /// Length of the changes
     fn len_changes(&self) -> usize {
-        self.ensure_header().unwrap();
-        self.header.get().unwrap().n_changes
+        self.read_header().unwrap().n_changes
     }
 }
-
 #[cfg(test)]
 mod test {
     use crate::cursor::PosType;
@@ -2370,6 +2459,117 @@ mod test {
         // Test builds of `import_all` parse each peer's last block; release builds do not.
         store.inner.lock().mem_parsed_kv.clear();
         (store, end, next)
+    }
+
+    #[test]
+    fn cow_unflushed_changes_keep_retained_block_and_sibling_exact() {
+        let source = LoroDoc::new_auto_commit();
+        source.set_peer_id(7).unwrap();
+        source
+            .get_text("t")
+            .insert(0, "base", PosType::Unicode)
+            .unwrap();
+        source.commit_then_renew();
+        let retained = source
+            .oplog()
+            .lock()
+            .change_store
+            .get_block_that_contains(ID::new(7, 0))
+            .unwrap();
+        assert!(matches!(retained.content, ChangesBlockContent::Changes(_)));
+        let before_range = retained.counter_range;
+        let held_arena = source.oplog().lock().arena.clone();
+        let retained_remote = || {
+            retained
+                .content
+                .try_changes()
+                .unwrap()
+                .iter()
+                .map(|c| convert_change_to_remote(&held_arena, c))
+                .collect::<Vec<_>>()
+        };
+        let before_changes = retained_remote();
+        let before_vv = source.oplog_vv();
+        let branch = source.fork_cow().unwrap();
+        branch.set_peer_id(7).unwrap();
+        branch
+            .get_text("t")
+            .insert(4, "!", PosType::Unicode)
+            .unwrap();
+        branch.commit_then_renew();
+        assert_eq!(source.get_text("t").to_string(), "base");
+        assert_eq!(source.oplog_vv(), before_vv);
+        assert_eq!(branch.get_text("t").to_string(), "base!");
+        assert_eq!(retained.counter_range, before_range);
+        assert_eq!(retained_remote(), before_changes);
+        source
+            .get_text("t")
+            .insert(4, "?", PosType::Unicode)
+            .unwrap();
+        source.commit_then_renew();
+        assert_eq!(branch.get_text("t").to_string(), "base!");
+        assert_eq!(source.get_text("t").to_string(), "base?");
+        assert_eq!(retained_remote(), before_changes);
+    }
+
+    #[test]
+    fn cow_bytes_to_both_keeps_sibling_and_retained_header_immutable() {
+        let (store, _, _) = kv_only_store_and_next_change();
+        let id = ID::new(1, 0);
+        let retained = store.get_block_that_contains(id).unwrap();
+        let ChangesBlockContent::Bytes(before) = &retained.content else {
+            panic!("fixture must begin with an unparsed Bytes block");
+        };
+        let header = before.header.as_ref().unwrap().clone();
+        assert!(header.keys.is_none() && header.cids.is_none());
+        let branch = store.fork_cow(store.arena.fork_cow(), Arc::new(AtomicI64::new(0)));
+        let branch_change = branch.get_change(id).unwrap();
+        let branch_block = branch.get_block_that_contains(id).unwrap();
+        let ChangesBlockContent::Both(_, parsed) = &branch_block.content else {
+            panic!("branch owning read must install Both");
+        };
+        assert!(parsed.header.as_ref().unwrap().keys.is_some());
+        assert!(parsed.header.as_ref().unwrap().cids.is_some());
+        assert!(header.keys.is_none() && header.cids.is_none());
+        assert!(matches!(retained.content, ChangesBlockContent::Bytes(_)));
+        assert!(matches!(
+            store.get_block_that_contains(id).unwrap().content,
+            ChangesBlockContent::Bytes(_)
+        ));
+        let expected = convert_change_to_remote(&branch.arena, &branch_change);
+        let original_change = store.get_change(id).unwrap();
+        assert_eq!(
+            convert_change_to_remote(&store.arena, &original_change),
+            expected
+        );
+        assert!(header.keys.is_none() && header.cids.is_none());
+        assert!(matches!(retained.content, ChangesBlockContent::Bytes(_)));
+    }
+
+    #[test]
+    fn cow_failed_block_parse_does_not_publish_enriched_header_or_change_sibling() {
+        let (store, _, _) = kv_only_store_and_next_change();
+        let id = ID::new(1, 0);
+        let retained = store.get_block_that_contains(id).unwrap();
+        let mut corrupt = retained.clone();
+        let ChangesBlockContent::Bytes(bytes) = &mut Arc::make_mut(&mut corrupt).content else {
+            panic!("fixture must begin with Bytes");
+        };
+        bytes.bytes = Bytes::from_static(b"invalid block");
+        let original_header = bytes.header.as_ref().unwrap().clone();
+        let branch_arena = store.arena.fork_cow();
+        assert!(corrupt.ensure_changes(&branch_arena).is_err());
+        let ChangesBlockContent::Bytes(after) = &corrupt.content else {
+            panic!("failed parse must not publish Both");
+        };
+        assert!(Arc::ptr_eq(
+            after.header.as_ref().unwrap(),
+            &original_header
+        ));
+        assert!(original_header.keys.is_none() && original_header.cids.is_none());
+        assert!(matches!(retained.content, ChangesBlockContent::Bytes(_)));
+        assert!(store.get_change(id).is_some());
+        assert!(original_header.keys.is_none() && original_header.cids.is_none());
     }
 
     #[test]

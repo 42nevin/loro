@@ -10,9 +10,9 @@ pub(crate) struct StrArena {
     bytes: AppendOnlyBytes,
     // Sealed native buffers with global byte offsets. No mutable append handle
     // survives sealing; each owner has its own tail and segment table.
-    sealed: Vec<(usize, BytesSlice)>,
+    sealed: im::Vector<Segment>,
     sealed_len: usize,
-    unicode_indexes: Vec<Index>,
+    unicode_indexes: im::Vector<Index>,
     len: Index,
 }
 
@@ -23,11 +23,38 @@ pub(crate) struct StrArenaCheckpoint {
     len: Index,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default)]
 struct Index {
     bytes: u32,
     utf16: u32,
     unicode: u32,
+}
+
+impl Clone for Index {
+    fn clone(&self) -> Self {
+        #[cfg(any(test, feature = "test_utils"))]
+        crate::cow_work::index_clone();
+        Self { bytes: self.bytes, utf16: self.utf16, unicode: self.unicode }
+    }
+}
+impl Index {
+    fn scalar_copy(&self) -> Self {
+        #[cfg(any(test, feature = "test_utils"))]
+        crate::cow_work::scalar_index_clone();
+        Self { bytes: self.bytes, utf16: self.utf16, unicode: self.unicode }
+    }
+}
+
+/// Immutable payload and its absolute arena offset. Persistent tree writes
+/// detach only their path; no owner shares a mutable append tail.
+#[derive(Debug)]
+struct Segment(usize, BytesSlice);
+impl Clone for Segment {
+    fn clone(&self) -> Self {
+        #[cfg(any(test, feature = "test_utils"))]
+        crate::cow_work::segment_clone();
+        Self(self.0, self.1.clone())
+    }
 }
 
 impl StrArenaCheckpoint {
@@ -41,7 +68,7 @@ impl StrArena {
         if !self.bytes.is_empty() {
             let bytes = std::mem::take(&mut self.bytes);
             let length = bytes.len();
-            self.sealed.push((self.sealed_len, bytes.slice(..)));
+            self.sealed.push_back(Segment(self.sealed_len, bytes.slice(..)));
             self.sealed_len += length;
         }
         Self {
@@ -49,7 +76,7 @@ impl StrArena {
             sealed: self.sealed.clone(),
             sealed_len: self.sealed_len,
             unicode_indexes: self.unicode_indexes.clone(),
-            len: self.len,
+            len: self.len.scalar_copy(),
         }
     }
 
@@ -105,20 +132,20 @@ impl StrArena {
         self.len.utf16 += utf16;
         self.len.unicode += unicode_len as u32;
         self.bytes.push_str(s);
-        let cur_len = self.len;
+        let cur_len = self.len.scalar_copy();
 
         let index = &mut self.unicode_indexes;
         if index.is_empty() {
-            index.push(Index {
+            index.push_back(Index {
                 bytes: 0,
                 utf16: 0,
                 unicode: 0,
             });
         }
 
-        let last = index.last().unwrap();
+        let last = index.back().unwrap();
         if cur_len.bytes - last.bytes > INDEX_INTERVAL {
-            self.unicode_indexes.push(cur_len);
+            self.unicode_indexes.push_back(cur_len);
         }
     }
 
@@ -140,11 +167,9 @@ impl StrArena {
                     .unwrap(),
             );
         }
-        if let Some((offset, bytes)) = self
-            .sealed
-            .iter()
-            .find(|(offset, bytes)| start >= *offset && end <= *offset + bytes.len())
-        {
+        let first = self.segment_boundary(start, true).saturating_sub(1);
+        let Segment(offset, bytes) = &self.sealed[first];
+        if end <= offset + bytes.len() {
             return std::borrow::Cow::Borrowed(
                 std::str::from_utf8(&bytes[start - offset..end - offset]).unwrap(),
             );
@@ -190,17 +215,18 @@ impl StrArena {
                 .bytes
                 .slice(start - self.sealed_len..end - self.sealed_len);
         }
-        let first = self
-            .sealed
-            .partition_point(|(offset, _)| *offset <= start)
-            .saturating_sub(1);
-        let (offset, bytes) = &self.sealed[first];
+        let first = self.segment_boundary(start, true).saturating_sub(1);
+        let Segment(offset, bytes) = &self.sealed[first];
         if end <= offset + bytes.len() {
             return bytes.slice_clone(start - offset..end - offset);
         }
         // Only a requested cross-segment slice is copied, never the whole prefix.
         let mut joined = AppendOnlyBytes::with_capacity(end - start);
-        for (offset, bytes) in &self.sealed[first..] {
+        // Index directly into the requested range, without walking the prefix.
+        for position in first..self.sealed.len() {
+            let Segment(offset, bytes) = &self.sealed[position];
+            #[cfg(any(test, feature = "test_utils"))]
+            crate::cow_work::segment_visit();
             if *offset >= end {
                 break;
             }
@@ -214,6 +240,25 @@ impl StrArena {
         joined.slice(..)
     }
 
+    /// First segment whose offset is greater than `offset` (inclusive=true)
+    /// or at least `offset` (inclusive=false). Offsets are strictly increasing.
+    fn segment_boundary(&self, offset: usize, inclusive: bool) -> usize {
+        let mut low = 0;
+        let mut high = self.sealed.len();
+        while low < high {
+            let mid = low + (high - low) / 2;
+            #[cfg(any(test, feature = "test_utils"))]
+            crate::cow_work::segment_visit();
+            let start = self.sealed[mid].0;
+            if start < offset || (inclusive && start == offset) {
+                low = mid + 1;
+            } else {
+                high = mid;
+            }
+        }
+        low
+    }
+
     fn unicode_to_byte_index(&self, unicode_index: u32) -> usize {
         let i = match self
             .unicode_indexes
@@ -222,7 +267,7 @@ impl StrArena {
             Ok(i) => i,
             Err(i) => i - 1,
         };
-        let index = self.unicode_indexes[i];
+        let index = &self.unicode_indexes[i];
         if index.unicode == unicode_index {
             return index.bytes as usize;
         }
@@ -241,7 +286,7 @@ impl StrArena {
         StrArenaCheckpoint {
             bytes_len: self.len.bytes as usize,
             unicode_indexes_len: self.unicode_indexes.len(),
-            len: self.len,
+            len: self.len.scalar_copy(),
         }
     }
 
@@ -255,9 +300,9 @@ impl StrArena {
             if checkpoint.bytes_len < self.sealed_len {
                 // A rollback may cross a sealing boundary held by another branch.
                 // Trim only our segment references; its immutable prefix survives.
-                self.sealed
-                    .retain(|(offset, _)| *offset < checkpoint.bytes_len);
-                if let Some((offset, bytes)) = self.sealed.last_mut() {
+                let retained = self.segment_boundary(checkpoint.bytes_len, false);
+                self.sealed.truncate(retained);
+                if let Some(Segment(offset, bytes)) = self.sealed.back_mut() {
                     *bytes = bytes.slice_clone(..checkpoint.bytes_len - *offset);
                 }
                 self.sealed_len = checkpoint.bytes_len;
@@ -270,7 +315,7 @@ impl StrArena {
             }
         }
         self.unicode_indexes
-            .truncate(checkpoint.unicode_indexes_len);
+            .truncate(checkpoint.unicode_indexes_len.min(self.unicode_indexes.len()));
         self.len = checkpoint.len;
     }
 }
@@ -280,6 +325,55 @@ mod test {
     use std::ops::Deref;
 
     use super::*;
+
+    #[test]
+    fn many_sealed_segments_seek_and_rollback_preserve_other_owners() {
+        for total in [129, 1025] {
+        let prefix = total - 2;
+        let mut arena = StrArena::default();
+        let segment = "界🙂a".repeat(64);
+        let width = segment.chars().count();
+        for _ in 0..prefix {
+            arena.alloc(&segment);
+            drop(arena.fork_cow());
+        }
+        assert!(arena.unicode_indexes.len() > 64);
+        let checkpoint = arena.checkpoint();
+        let mut older = arena.fork_cow();
+        for _ in 0..2 {
+            arena.alloc(&segment);
+            drop(arena.fork_cow());
+        }
+        crate::cow_work::reset();
+        let mut full = arena.fork_cow();
+        let fork_work = crate::cow_work::take();
+        crate::cow_work::reset();
+        let last = arena.slice_str_by_unicode((total - 1) * width..total * width).into_owned();
+        let seek = crate::cow_work::take();
+        assert_eq!(last, segment);
+        crate::cow_work::reset();
+        arena.rollback(checkpoint);
+        let rollback = crate::cow_work::take();
+        arena.alloc("!");
+        assert_eq!(arena.slice_str_by_unicode(prefix * width..), "!");
+        assert_eq!(older.len_unicode(), prefix * width);
+        assert_eq!(older.slice_str_by_unicode((prefix - 1) * width..), segment);
+        assert_eq!(full.len_unicode(), total * width);
+        assert_eq!(full.slice_str_by_unicode((total - 1) * width..), segment);
+        eprintln!("SEGMENT_WORK segments={total} seek_visits={} rollback_visits={} fork_index_clones={} fork_segment_clones={} rollback_index_clones={} rollback_segment_clones={}",
+            seek.string_segment_visits, rollback.string_segment_visits,
+            fork_work.string_index_entries_cloned, fork_work.string_segment_entries_cloned,
+            rollback.string_index_entries_cloned, rollback.string_segment_entries_cloned);
+        // Even 1025 segments need at most eleven search probes; allow extra
+        // bounded indexing/boundary checks, but never a whole-prefix scan.
+        assert!(seek.string_segment_visits <= 32, "seek scanned retained prefix");
+        assert!(rollback.string_segment_visits <= 32, "rollback scanned retained prefix");
+        assert!(fork_work.string_index_entries_cloned <= 128);
+        assert!(fork_work.string_segment_entries_cloned <= 128);
+        assert!(rollback.string_index_entries_cloned <= 512);
+        assert!(rollback.string_segment_entries_cloned <= 512);
+        }
+    }
 
     #[test]
     fn sealed_prefixes_keep_unicode_slices_and_rollback_branch_local() {

@@ -140,3 +140,5 @@ History uses short imperative commits, often prefixed by `fix:`, `test:`,
 linked issues or traces when relevant.
 - Structured WASM reads, node identity, ranges and performance responsibilities:
   [context/wasm-container-tree.md](context/wasm-container-tree.md).
+- Native candidate metadata ownership, sparse slots, and remaining branch-copy costs:
+  [context/native-cow-string-metadata.md](context/native-cow-string-metadata.md).

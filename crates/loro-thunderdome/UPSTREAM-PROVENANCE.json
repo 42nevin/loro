@@ -1,0 +1,26 @@
+{
+  "package": "loro-thunderdome",
+  "version": "0.6.2",
+  "registry_archive_sha256": "3f3d053a135388e6b1df14e8af1212af5064746e9b87a06a345a7a779ee9695a",
+  "original_files_sha256": {
+    ".cargo_vcs_info.json": "be7f0ffb510a13012e064844c8a0de21e4403270c0e69baf7fd105583dc22ac9",
+    ".github/workflows/ci.yml": "4e888342af8bc5753c4f21e9d7d0aded613111cca6a40aed011ca23b2116a680",
+    ".gitignore": "2ebe6cb6f5289849dce5a8a6cdd77e06b1385302c862982f8e181c4782d19214",
+    "CHANGELOG.md": "219212b06c1319bf6dafcd113a742ef63d3f7804c7d0aadfe7199e87266491b1",
+    "Cargo.toml": "ed767516d63d46d3ef9076c4217f849d062a849cdaa288ad5950888b4b5fb8bc",
+    "Cargo.toml.orig": "93b0eebfe3c22fce1fd52f284be9f253660478f4088b282a9524678b822e107e",
+    "LICENSE-APACHE": "c8b25bb75fd899b6f16794dc8173400f3221a204afb79cd39c3659c955029381",
+    "LICENSE-MIT": "a7a9cf0c93716fc4861165716257701f7363402abfe748bdac1a802cfcd2fa49",
+    "README.md": "cd9ed1da7bf67f7afb972226c66e4e333c2cf73d9da31b7bcb385592b6cf3be8",
+    "README.tpl": "d0b9cc634a63b09bb4102792092db38e912dedce844b789c103b1c2c39037f3c",
+    "src/arena.rs": "693e38ebf078548f268556abeca8484ad992b43bfa6d5f62295c91104ad90383",
+    "src/free_pointer.rs": "6ff52b5640069626805ba1774311cbe33c1c4ace6729a1841898a9c8e1509722",
+    "src/generation.rs": "ded86a61aa1fd98ca6013a83d7a94465dab71706ab11e77f8805b53900f3ab46",
+    "src/iter/drain.rs": "c1f977bc7d88655183be2decdda39a3ab0b56816999bcad9dfe11d6fa540d1d8",
+    "src/iter/into_iter.rs": "8855a413018cf503a8d6a75d41d65d25e26c00aeb7077ed187eba1559819619e",
+    "src/iter/iter.rs": "6bb687f829c54961813b2f8b9e14aca28bf593e5a4414f5f2aec406415825e8c",
+    "src/iter/iter_mut.rs": "a7132824640edb71c59f8fd38a8e4961add2a559f3929128d622ecebd8863d65",
+    "src/iter/mod.rs": "00a2540276389bbf927555302a4530145a21dd9d1e6b49bc2b046ea61bfe0703",
+    "src/lib.rs": "828c4e1f59e668abe4c4c6286f9408c4b2045d9a59f72ac1ca4b6c4d1eeee9e9"
+  }
+}

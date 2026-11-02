@@ -1,7 +1,7 @@
 use append_only_bytes::BytesSlice;
 use generic_btree::{
     rle::{CanRemove, HasLength, Mergeable, Sliceable, TryInsert},
-    BTree, BTreeTrait, Cursor, LeafIndex,
+    BTreeTrait, Cursor, LeafIndex,
 };
 use loro_common::{Counter, IdFull, IdSpan, LoroError, LoroResult, LoroValue, ID};
 use query::{ByteQuery, ByteQueryT};
@@ -63,7 +63,7 @@ where
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RichtextState {
-    tree: NativeCow<BTree<RichtextTreeTrait>>,
+    tree: NativeCow<generic_btree::CowBTree<RichtextTreeTrait>>,
     style_ranges: Option<Box<StyleRangeMap>>,
     cached_cursor: Option<CachedCursor>,
 }
@@ -1204,6 +1204,9 @@ impl EntityRangeInfo {
         self.entity_end - self.entity_start
     }
 }
+
+// Reachable element payloads and cache scalars have no mutable shared cells.
+impl generic_btree::CowBTreeTrait for RichtextTreeTrait {}
 
 impl BTreeTrait for RichtextTreeTrait {
     type Elem = RichtextStateChunk;

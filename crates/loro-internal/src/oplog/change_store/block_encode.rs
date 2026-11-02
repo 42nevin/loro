@@ -74,7 +74,6 @@ use loro_common::{
     ContainerID, Counter, HasCounterSpan, HasLamportSpan, InternalString, Lamport, LoroError,
     LoroResult, PeerID, TreeID, ID,
 };
-use once_cell::sync::OnceCell;
 use rle::HasLength;
 use serde::{Deserialize, Serialize};
 use serde_columnar::{columnar, AnyRleDecoder, DeltaOfDeltaDecoder, Itertools};
@@ -365,7 +364,7 @@ impl ValueEncodeRegister for Registers {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct ChangesBlockHeader {
     pub peer: PeerID,
     pub counter: Counter,
@@ -379,8 +378,28 @@ pub(crate) struct ChangesBlockHeader {
     /// This has n elements
     pub lamports: Vec<Lamport>,
     pub deps_groups: Vec<Frontiers>,
-    pub keys: OnceCell<Vec<InternalString>>,
-    pub cids: OnceCell<Vec<ContainerID>>,
+    pub keys: Option<Arc<Vec<InternalString>>>,
+    pub cids: Option<Arc<Vec<ContainerID>>>,
+}
+
+impl Clone for ChangesBlockHeader {
+    fn clone(&self) -> Self {
+        #[cfg(any(test, feature = "test_utils"))]
+        crate::cow_work::change_header_clone(
+            self.peers.len() + self.counters.len() + self.lamports.len() + self.deps_groups.len(),
+        );
+        Self {
+            peer: self.peer,
+            counter: self.counter,
+            n_changes: self.n_changes,
+            peers: self.peers.clone(),
+            counters: self.counters.clone(),
+            lamports: self.lamports.clone(),
+            deps_groups: self.deps_groups.clone(),
+            keys: self.keys.clone(),
+            cids: self.cids.clone(),
+        }
+    }
 }
 
 pub fn decode_header(m_bytes: &[u8]) -> LoroResult<ChangesBlockHeader> {
@@ -497,7 +516,7 @@ pub fn decode_cids(
 ) -> LoroResult<ChangesBlockHeader> {
     let doc = postcard::from_bytes(bytes)
         .map_err(|e| LoroError::DecodeError(format!("Decode block error {e}").into_boxed_str()))?;
-    let header = if let Some(h) = header {
+    let mut header = if let Some(h) = header {
         h
     } else {
         let doc = postcard::from_bytes(bytes).map_err(|e| {
@@ -506,23 +525,28 @@ pub fn decode_cids(
         decode_header_from_doc(&doc)?
     };
 
-    if header.cids.get().is_some() {
+    if header.cids.is_some() {
         return Ok(header);
     }
 
     let EncodedBlock { cids, keys, .. } = doc;
-    let keys = header.keys.get_or_try_init(|| decode_keys(&keys))?;
+    if header.keys.is_none() {
+        header.keys = Some(Arc::new(decode_keys(&keys)?));
+    }
+    let keys = header.keys.as_deref().expect("decoded keys");
     let decode_arena = ValueDecodeArena {
         peers: &header.peers,
         keys,
     };
 
-    header.cids.get_or_try_init(|| {
-        ContainerArena::decode(&cids)?
-            .iter()
-            .map(|x| x.as_container_id(&decode_arena))
-            .try_collect()
-    })?;
+    if header.cids.is_none() {
+        header.cids = Some(Arc::new(
+            ContainerArena::decode(&cids)?
+                .iter()
+                .map(|x| x.as_container_id(&decode_arena))
+                .try_collect()?,
+        ));
+    }
     Ok(header)
 }
 
@@ -530,16 +554,16 @@ pub fn decode_cids(
 pub fn decode_block(
     m_bytes: &[u8],
     shared_arena: &SharedArena,
-    header: Option<&ChangesBlockHeader>,
+    header: Option<&mut ChangesBlockHeader>,
 ) -> LoroResult<Vec<Change>> {
     let doc = postcard::from_bytes(m_bytes)
         .map_err(|e| LoroError::DecodeError(format!("Decode block error {e}").into_boxed_str()))?;
-    let header_on_stack;
+    let mut header_on_stack;
     let header = if let Some(header) = header {
         header
     } else {
         header_on_stack = decode_header_from_doc(&doc)?;
-        &header_on_stack
+        &mut header_on_stack
     };
     let EncodedBlock {
         n_changes,
@@ -565,19 +589,25 @@ pub fn decode_block(
         .take_n_finalize(n_changes)
         .map_err(|_| LoroError::DecodeDataCorruptionError)?;
     let mut commit_msg_index = 0u32;
-    let keys = header.keys.get_or_try_init(|| decode_keys(&keys))?;
+    if header.keys.is_none() {
+        header.keys = Some(Arc::new(decode_keys(&keys)?));
+    }
+    let keys = header.keys.as_deref().expect("decoded keys");
     let decode_arena = ValueDecodeArena {
         peers: &header.peers,
         keys,
     };
     let positions = PositionArena::decode_v2(&positions)?;
     let positions = positions.try_parse_to_positions()?;
-    let cids: &Vec<ContainerID> = header.cids.get_or_try_init(|| {
-        ContainerArena::decode(&cids)?
-            .iter()
-            .map(|x| x.as_container_id(&decode_arena))
-            .try_collect()
-    })?;
+    if header.cids.is_none() {
+        header.cids = Some(Arc::new(
+            ContainerArena::decode(&cids)?
+                .iter()
+                .map(|x| x.as_container_id(&decode_arena))
+                .try_collect()?,
+        ));
+    }
+    let cids = header.cids.as_deref().expect("decoded container IDs");
     let mut value_reader = ValueReader::new(&values);
     let encoded_ops_iters = serde_columnar::iter_from_bytes::<EncodedOps>(&ops)?;
     let op_iter = encoded_ops_iters.ops;

@@ -134,6 +134,8 @@
 //! Other iterators will still return empty value.
 #![allow(clippy::uninlined_format_args)]
 pub mod block;
+#[cfg(feature = "clone_work")]
+pub mod clone_work;
 pub mod compress;
 pub mod iter;
 pub mod mem_store;

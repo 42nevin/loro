@@ -1,5 +1,4 @@
 use loro_common::{Counter, Lamport, LoroError, LoroResult, PeerID, ID};
-use once_cell::sync::OnceCell;
 use rle::HasLength;
 use serde_columnar::{
     AnyRleDecoder, AnyRleEncoder, BoolRleDecoder, BoolRleEncoder, DeltaOfDeltaDecoder,
@@ -236,8 +235,8 @@ pub(crate) fn decode_changes_header(
         counters,
         deps_groups: deps,
         lamports,
-        keys: OnceCell::new(),
-        cids: OnceCell::new(),
+        keys: None,
+        cids: None,
     })
 }
 

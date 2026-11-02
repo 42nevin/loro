@@ -5,7 +5,6 @@ use crate::span::{HasId, HasLamport};
 use crate::sync::Mutex;
 use crate::version::{shrink_frontiers, Frontiers, ImVersionVector, VersionVector};
 use loro_common::{HasCounter, HasCounterSpan, HasIdSpan, HasLamportSpan, PeerID};
-use once_cell::sync::OnceCell;
 use rle::{HasIndex, HasLength, Mergable, Sliceable};
 use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
@@ -29,7 +28,7 @@ pub struct AppDag {
     ///
     /// - All the unparsed op ids must be included in `unparsed_vv`.
     /// - All the parsed and unparsed op ids must be included in `vv`.
-    map: Mutex<BTreeMap<ID, AppDagNode>>,
+    map: Mutex<im::OrdMap<ID, AppDagNode>>,
     /// The latest known frontiers
     frontiers: Frontiers,
     /// The latest known version vector
@@ -74,7 +73,7 @@ enum UnhandledDepPointLog {
     Removed(ID),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct AppDagNode {
     inner: Arc<AppDagNodeInner>,
 }
@@ -95,18 +94,38 @@ impl AppDagNode {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct AppDagNodeInner {
     pub(crate) peer: PeerID,
     pub(crate) cnt: Counter,
     pub(crate) lamport: Lamport,
     pub(crate) deps: Frontiers,
-    pub(crate) vv: OnceCell<ImVersionVector>,
+    /// Immutable causal vector immediately before this node. Initializing it
+    /// replaces only the owning DAG's persistent map path.
+    pub(crate) vv: Option<ImVersionVector>,
     /// A flag indicating whether any other nodes from a different peer depend on this node.
     /// The calculation of frontiers is based on the property that a node does not depend
     /// on the middle of other nodes.
     pub(crate) has_succ: bool,
     pub(crate) len: usize,
+}
+
+impl Clone for AppDagNode {
+    fn clone(&self) -> Self {
+        #[cfg(any(test, feature = "test_utils"))]
+        crate::cow_work::dag_node_ref_clone();
+        Self { inner: self.inner.clone() }
+    }
+}
+
+impl Clone for AppDagNodeInner {
+    fn clone(&self) -> Self {
+        #[cfg(any(test, feature = "test_utils"))]
+        crate::cow_work::dag_node_value_clone();
+        Self { peer: self.peer, cnt: self.cnt, lamport: self.lamport,
+            deps: self.deps.clone(), vv: self.vv.clone(),
+            has_succ: self.has_succ, len: self.len }
+    }
 }
 
 impl From<AppDagNodeInner> for AppDagNode {
@@ -121,13 +140,7 @@ impl AppDag {
     pub(super) fn fork_cow(&self, change_store: ChangeStore) -> Self {
         Self {
             change_store,
-            map: Mutex::new(
-                self.map
-                    .lock()
-                    .iter()
-                    .map(|(id, n)| (*id, AppDagNode::new((*n.inner).clone())))
-                    .collect(),
-            ),
+            map: Mutex::new(self.map.lock().clone()),
             frontiers: self.frontiers.clone(),
             vv: self.vv.clone(),
             shallow_since_frontiers: self.shallow_since_frontiers.clone(),
@@ -144,7 +157,7 @@ impl AppDag {
     pub(super) fn new(change_store: ChangeStore) -> Self {
         Self {
             change_store,
-            map: Mutex::new(BTreeMap::new()),
+            map: Mutex::new(im::OrdMap::new()),
             frontiers: Frontiers::default(),
             vv: VersionVector::default(),
             unparsed_vv: Mutex::new(VersionVector::default()),
@@ -252,7 +265,7 @@ impl AppDag {
         self.pending_txn_node = checkpoint.pending_txn_node;
     }
 
-    fn record_map_entry_before_mutation(&self, map: &BTreeMap<ID, AppDagNode>, id: ID) {
+    fn record_map_entry_before_mutation(&self, map: &im::OrdMap<ID, AppDagNode>, id: ID) {
         if !self
             .import_rollback_has_journal
             .load(AtomicOrdering::Relaxed)
@@ -373,7 +386,7 @@ impl AppDag {
 
         if !inserted {
             let node: AppDagNode = AppDagNodeInner {
-                vv: OnceCell::new(),
+                vv: None,
                 peer: change.id.peer,
                 cnt: change.id.counter,
                 lamport: change.lamport,
@@ -391,14 +404,15 @@ impl AppDag {
 
     fn try_with_node_mut<R>(
         &self,
-        map: &mut BTreeMap<ID, AppDagNode>,
+        map: &mut im::OrdMap<ID, AppDagNode>,
         id: ID,
         f: impl FnOnce(Option<(ID, &mut AppDagNode)>) -> R,
     ) -> R {
-        let x = map.range_mut(..=id).next_back();
-        if let Some((node_id, node)) = x {
+        let node_id = map.range(..=id).next_back().map(|(key, _)| *key);
+        if let Some(node_id) = node_id {
+            let node = map.get_mut(&node_id).expect("selected predecessor");
             if node.contains_id(id) {
-                f(Some((*node_id, node)))
+                f(Some((node_id, node)))
             } else {
                 f(None)
             }
@@ -441,14 +455,14 @@ impl AppDag {
     ) -> R {
         self.lazy_load_last_of_peer(peer);
         let mut binding = self.map.lock();
-        let last = binding
-            .range_mut(..=ID::new(peer, Counter::MAX))
-            .next_back()
-            .map(|(id, v)| {
+        let key = binding.range(..=ID::new(peer, Counter::MAX))
+            .next_back().map(|(id, _)| *id);
+        let last = key.map(|id| {
+                let v = binding.get_mut(&id).expect("selected predecessor");
                 if record_if_before.is_some_and(|old_end| id.counter < old_end) {
-                    self.record_map_entry_before_replacement(*id, Some(v.clone()));
+                    self.record_map_entry_before_replacement(id, Some(v.clone()));
                 }
-                (*id, v)
+                (id, v)
             });
         f(last)
     }
@@ -490,7 +504,7 @@ impl AppDag {
         &self,
         nodes: Vec<AppDagNode>,
         peer: u64,
-        map_input: Option<&mut BTreeMap<ID, AppDagNode>>,
+        map_input: Option<&mut im::OrdMap<ID, AppDagNode>>,
     ) {
         assert!(!nodes.is_empty());
         let mut map_guard = None;
@@ -571,7 +585,7 @@ impl AppDag {
         &self,
         ids: impl IntoIterator<Item = ID>,
         skip_peer: PeerID,
-        map: Option<&mut BTreeMap<ID, AppDagNode>>,
+        map: Option<&mut im::OrdMap<ID, AppDagNode>>,
     ) {
         let mut map_guard = None;
         let map = map.unwrap_or_else(|| {
@@ -748,8 +762,8 @@ impl AppDag {
                     }
 
                     let (_, dep_node) = map.range(..=dep).next_back().unwrap();
-                    self.ensure_vv_for(dep_node);
-                    expected_vv.extend_to_include_vv(dep_node.vv.get().unwrap().iter());
+                    let dep_vv = self.ensure_vv_for(dep_node);
+                    expected_vv.extend_to_include_vv(dep_vv.iter());
                     expected_vv.extend_to_include_last_id(dep);
                 }
 
@@ -935,7 +949,7 @@ impl AppDag {
                         cnt: start_id.counter,
                         lamport: start_lamport,
                         deps: deps.clone(),
-                        vv: OnceCell::new(),
+                        vv: None,
                         has_succ: false,
                         len,
                     }),
@@ -966,7 +980,7 @@ impl AppDag {
     }
 }
 
-fn check_always_dep_on_last_id(map: &BTreeMap<ID, AppDagNode>) {
+fn check_always_dep_on_last_id(map: &im::OrdMap<ID, AppDagNode>) {
     for (_, node) in map.iter() {
         for dep in node.deps.iter() {
             let Some((&dep_id, dep_node)) = map.range(..=dep).next_back() else {
@@ -1003,12 +1017,12 @@ impl Sliceable for AppDagNode {
             } else {
                 self.deps.clone()
             },
-            vv: if let Some(vv) = self.vv.get() {
+            vv: if let Some(vv) = &self.vv {
                 let mut new = vv.clone();
                 new.insert(self.peer, self.cnt + from as Counter);
-                OnceCell::with_value(new)
+                Some(new)
             } else {
-                OnceCell::new()
+                None
             },
             has_succ: if to == self.len { self.has_succ } else { true },
             len: to - from,
@@ -1131,76 +1145,82 @@ impl AppDag {
     }
 
     pub(crate) fn ensure_vv_for(&self, target_node: &AppDagNode) -> ImVersionVector {
-        if target_node.vv.get().is_none() {
-            // Iterative DFS. When the DAG contains a diamond, a dep can end
-            // up on the stack multiple times (once for each ancestor that
-            // re-queued the current node before its deps were ready). We
-            // skip nodes whose vv has already been computed — the original
-            // code eagerly called `OnceCell::set(..).unwrap()` on every pop
-            // and panicked on the second visit (see loro-dev/loro#929).
-            let mut stack: SmallVec<[AppDagNode; 4]> = smallvec::smallvec![target_node.clone()];
-            while let Some(top_node) = stack.pop() {
-                if top_node.vv.get().is_some() {
-                    continue;
+        // A captured handle is immutable and may predate a map replacement.
+        // Refresh only an identical causal start; length and successor flags do
+        // not change its pre-node vector. Slices and pending nodes need not be
+        // stored in the map at all.
+        fn same_start(a: &AppDagNode, b: &AppDagNode) -> bool {
+            a.peer == b.peer && a.cnt == b.cnt && a.lamport == b.lamport && a.deps == b.deps
+        }
+        let mut local = BTreeMap::<ID, (AppDagNode, ImVersionVector)>::new();
+        let known = |node: &AppDagNode, local: &BTreeMap<ID, (AppDagNode, ImVersionVector)>| {
+            node.vv.clone().or_else(|| {
+                self.map.lock().get(&node.id_start())
+                    .filter(|current| same_start(current, node))
+                    .and_then(|current| current.vv.clone())
+            }).or_else(|| local.get(&node.id_start())
+                .filter(|(current, _)| same_start(current, node))
+                .map(|(_, vv)| vv.clone()))
+        };
+        if let Some(vv) = known(target_node, &local) {
+            return vv;
+        }
+        // Preserve iterative dependency order and diamond deduplication. No map
+        // lock crosses lazy loading, and no owner shares a mutable result cell.
+        let mut stack: SmallVec<[AppDagNode; 4]> = smallvec::smallvec![target_node.clone()];
+        while let Some(top_node) = stack.pop() {
+            if known(&top_node, &local).is_some() {
+                continue;
+            }
+            let mut ans_vv = ImVersionVector::default();
+            if top_node.deps == self.shallow_root_frontiers_deps {
+                for (&p, &c) in self.shallow_since_vv.iter() {
+                    ans_vv.insert(p, c);
                 }
-
-                let mut ans_vv = ImVersionVector::default();
-                if top_node.deps == self.shallow_root_frontiers_deps {
-                    for (&p, &c) in self.shallow_since_vv.iter() {
-                        ans_vv.insert(p, c);
+            } else {
+                let mut all_deps_processed = true;
+                for id in top_node.deps.iter() {
+                    let Some(node) = self.get(id) else {
+                        if self.shallow_since_vv.includes_id(id) { continue; }
+                        panic!("deps should be in the dag");
+                    };
+                    if known(&node, &local).is_none() {
+                        if all_deps_processed { stack.push(top_node.clone()); }
+                        all_deps_processed = false;
+                        stack.push(node);
                     }
-                } else {
-                    let mut all_deps_processed = true;
-                    for id in top_node.deps.iter() {
-                        let Some(node) = self.get(id) else {
-                            if self.shallow_since_vv.includes_id(id) {
-                                continue;
-                            }
-
-                            panic!("deps should be in the dag");
-                        };
-                        if node.vv.get().is_none() {
-                            if all_deps_processed {
-                                stack.push(top_node.clone());
-                            }
-                            all_deps_processed = false;
-                            stack.push(node);
+                }
+                if !all_deps_processed { continue; }
+                for id in top_node.deps.iter() {
+                    let Some(node) = self.get(id) else {
+                        if self.shallow_since_vv.includes_id(id) {
+                            ans_vv.extend_to_include_vv(self.shallow_since_vv.iter());
                             continue;
-                        };
-                    }
-
-                    if !all_deps_processed {
-                        continue;
-                    }
-
-                    for id in top_node.deps.iter() {
-                        let Some(node) = self.get(id) else {
-                            if self.shallow_since_vv.includes_id(id) {
-                                ans_vv.extend_to_include_vv(self.shallow_since_vv.iter());
-                                continue;
-                            }
-
-                            panic!("deps should be in the dag");
-                        };
-                        let dep_vv = node.vv.get().unwrap();
-                        if ans_vv.is_empty() {
-                            ans_vv = dep_vv.clone();
-                        } else {
-                            ans_vv.extend_to_include_vv(dep_vv.iter());
                         }
-
-                        ans_vv.insert(node.peer, node.ctr_end());
-                    }
+                        panic!("deps should be in the dag");
+                    };
+                    let dep_vv = known(&node, &local).expect("processed dependency vector");
+                    if ans_vv.is_empty() { ans_vv = dep_vv; }
+                    else { ans_vv.extend_to_include_vv(dep_vv.iter()); }
+                    // A detached slice can depend on an interior operation of
+                    // an unsplit node. Include the dependency, not the whole
+                    // enclosing range, without lowering other dep coverage.
+                    ans_vv.extend_to_include_last_id(id);
                 }
-
-                // Tolerate a racing set from the diamond case above: if
-                // another path already initialized this cell, trust that
-                // value (it was computed from the same DAG) and move on.
-                let _ = top_node.vv.set(ans_vv);
+            }
+            let mut map = self.map.lock();
+            if map.get(&top_node.id_start()).is_some_and(|current| same_start(current, &top_node)) {
+                let current = map.get_mut(&top_node.id_start()).expect("matched causal start");
+                if current.vv.is_none() {
+                    Arc::make_mut(&mut current.inner).vv = Some(ans_vv);
+                }
+            } else {
+                // Invocation scratch for noncanonical slice/pending inputs,
+                // never an extra persistent node or a retained answer cache.
+                local.insert(top_node.id_start(), (top_node, ans_vv));
             }
         }
-
-        target_node.vv.get().unwrap().clone()
+        known(target_node, &local).expect("processed target vector")
     }
 
     /// Compare the causal order of two versions.
@@ -1421,7 +1441,7 @@ mod ensure_vv_for_tests {
 
     fn make_dag_node(peer: PeerID, cnt: Counter, len: usize, deps: Frontiers) -> AppDagNode {
         AppDagNodeInner {
-            vv: OnceCell::new(),
+            vv: None,
             peer,
             cnt,
             lamport: cnt as Lamport,
@@ -1430,6 +1450,96 @@ mod ensure_vv_for_tests {
             len,
         }
         .into()
+    }
+
+    fn empty_store_for_ownership_test() -> ChangeStore {
+        ChangeStore::new_mem(&SharedArena::new(), Arc::new(AtomicI64::new(0)))
+    }
+
+    #[test]
+    fn fork_lazy_vv_is_owner_local_and_stale_handles_return_exact_values() {
+        let dag = AppDag::new(empty_store_for_ownership_test());
+        let x = make_dag_node(1, 0, 3, Frontiers::default());
+        let y = make_dag_node(2, 0, 1, Frontiers::from_id(ID::new(1, 2)));
+        dag.map.lock().insert(x.id_start(), x.clone());
+        dag.map.lock().insert(y.id_start(), y.clone());
+        let branch = dag.fork_cow(empty_store_for_ownership_test());
+        let stale = branch.get(ID::new(2, 0)).unwrap();
+        let value = branch.ensure_vv_for(&stale);
+        assert_eq!(value.get(&1).copied(), Some(3));
+        assert_eq!(branch.ensure_vv_for(&stale), value);
+        assert!(dag.map.lock().get(&x.id_start()).unwrap().vv.as_ref().is_none());
+        assert!(dag.map.lock().get(&y.id_start()).unwrap().vv.as_ref().is_none());
+        assert_eq!(dag.ensure_vv_for(&y), value);
+        assert_eq!(branch.ensure_vv_for(&stale), value);
+    }
+
+    #[test]
+    fn sliced_pending_and_replaced_handles_do_not_replace_canonical_ranges() {
+        let mut dag = AppDag::new(empty_store_for_ownership_test());
+        let x = make_dag_node(1, 0, 3, Frontiers::default());
+        dag.map.lock().insert(x.id_start(), x.clone());
+        let slice = x.slice(1, 3);
+        let value = dag.ensure_vv_for(&slice);
+        assert_eq!(value.get(&1).copied(), Some(1));
+        assert_eq!(dag.map.lock().len(), 1);
+        assert_eq!(dag.map.lock().get(&x.id_start()).unwrap().len, 3);
+        let pending = make_dag_node(2, 0, 1, Frontiers::from_id(ID::new(1, 2)));
+        dag.pending_txn_node = Some(pending.clone());
+        assert_eq!(dag.ensure_vv_for(&pending).get(&1).copied(), Some(3));
+        assert!(!dag.map.lock().contains_key(&pending.id_start()));
+        dag.pending_txn_node = None;
+        dag.map.lock().insert(x.id_start(), x.slice(0, 1));
+        dag.map.lock().insert(ID::new(1, 1), x.slice(1, 3));
+        assert!(dag.ensure_vv_for(&x).is_empty());
+        assert_eq!(dag.map.lock().len(), 2);
+        assert_eq!(dag.map.lock().get(&x.id_start()).unwrap().len, 1);
+        assert_eq!(dag.map.lock().get(&ID::new(1, 1)).unwrap().len, 2);
+    }
+
+    #[test]
+    fn redundant_dependency_endpoint_union_never_lowers_an_ancestor_counter() {
+        let dag = AppDag::new(empty_store_for_ownership_test());
+        let x = make_dag_node(2, 0, 3, Frontiers::default());
+        let y = make_dag_node(1, 0, 1, Frontiers::from_id(ID::new(2, 2)));
+        let mut deps = Frontiers::default();
+        deps.push(ID::new(1, 0));
+        deps.push(ID::new(2, 0));
+        let z = make_dag_node(3, 0, 1, deps);
+        dag.map.lock().insert(x.id_start(), x);
+        dag.map.lock().insert(y.id_start(), y);
+        dag.map.lock().insert(z.id_start(), z.clone());
+        let vv = dag.ensure_vv_for(&z);
+        assert_eq!(vv.get(&1).copied(), Some(1));
+        assert_eq!(vv.get(&2).copied(), Some(3));
+        assert!(vv.get(&3).is_none());
+        assert_eq!(dag.ensure_vv_for(&z), vv);
+    }
+
+    #[test]
+    fn import_journal_rollback_keeps_sibling_dag_metadata_independent() {
+        let mut dag = AppDag::new(empty_store_for_ownership_test());
+        let x = make_dag_node(1, 0, 2, Frontiers::default());
+        dag.map.lock().insert(x.id_start(), x.clone());
+        dag.vv.insert(1, 2);
+        dag.frontiers = Frontiers::from_id(ID::new(1, 1));
+        let sibling = dag.fork_cow(empty_store_for_ownership_test());
+        dag.begin_import_rollback();
+        {
+            let mut map = dag.map.lock();
+            dag.record_map_entry_before_mutation(&map, x.id_start());
+            map.insert(x.id_start(), make_dag_node(1, 0, 4, Frontiers::default()));
+        }
+        dag.vv.insert(1, 4);
+        dag.frontiers = Frontiers::from_id(ID::new(1, 3));
+        assert!(dag.ensure_vv_for(&dag.get(ID::new(1, 3)).unwrap()).is_empty());
+        assert_eq!(sibling.map.lock().get(&x.id_start()).unwrap().len, 2);
+        assert!(sibling.map.lock().get(&x.id_start()).unwrap().vv.as_ref().is_none());
+        dag.rollback_import();
+        assert_eq!(dag.vv, sibling.vv);
+        assert_eq!(dag.frontiers, sibling.frontiers);
+        assert_eq!(dag.map.lock().get(&x.id_start()).unwrap().len, 2);
+        assert_eq!(dag.ensure_vv_for(&x), sibling.ensure_vv_for(&x));
     }
 
     fn make_shallow_dag_for_import_deps() -> AppDag {

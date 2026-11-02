@@ -5,6 +5,10 @@
 use event::DiffBatch;
 use event::{DiffEvent, Subscriber};
 pub use loro_common::InternalString;
+/// Opt-in native branch work observations for diagnostics only.
+#[cfg(feature = "test_utils")]
+pub use loro_internal::cow_work;
+
 pub use loro_internal::cursor::CannotFindRelativePosition;
 use loro_internal::cursor::Cursor;
 use loro_internal::cursor::PosQueryResult;

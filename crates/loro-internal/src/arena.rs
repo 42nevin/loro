@@ -15,8 +15,9 @@ use crate::{
 };
 use append_only_bytes::BytesSlice;
 use loro_common::{PeerID, ID};
-use rustc_hash::FxHashMap;
+use rustc_hash::FxHasher;
 use std::fmt;
+use std::hash::BuildHasherDefault;
 use std::{
     num::NonZeroU16,
     ops::{Range, RangeBounds},
@@ -47,23 +48,53 @@ pub(crate) enum CreatorOp {
     Corrupt,
 }
 
+// Immutable primary entries. Clone observations include persistent-vector leaf copies,
+// not just explicit forks; these wrappers add no allocation or mutable shared cells.
+#[derive(Debug)]
+#[repr(transparent)]
+struct ArenaId(ContainerID);
+impl Clone for ArenaId {
+    fn clone(&self) -> Self {
+        #[cfg(any(test, feature = "test_utils"))]
+        crate::cow_work::arena_id_clone();
+        Self(self.0.clone())
+    }
+}
+impl std::ops::Deref for ArenaId {
+    type Target = ContainerID;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+#[derive(Debug)]
+#[repr(transparent)]
+struct ArenaValue(LoroValue);
+impl Clone for ArenaValue {
+    fn clone(&self) -> Self {
+        #[cfg(any(test, feature = "test_utils"))]
+        crate::cow_work::arena_value_clone();
+        Self(self.0.clone())
+    }
+}
+type ArenaMap<K, V> = im::HashMap<K, V, BuildHasherDefault<FxHasher>>;
+
 #[derive(Default)]
 struct ArenaContainers {
-    container_idx_to_id: Vec<ContainerID>,
+    container_idx_to_id: im::Vector<ArenaId>,
     /// Cached container depth. `None` means unknown or waiting on an unknown parent depth.
     /// Use `get_depth()` for authoritative reads; direct access is only a cache fast path.
-    depth: Vec<Option<NonZeroU16>>,
-    container_id_to_idx: FxHashMap<ContainerID, ContainerIdx>,
+    depth: im::Vector<Option<NonZeroU16>>,
+    container_id_to_idx: ArenaMap<ContainerID, ContainerIdx>,
     /// The parent of each container.
-    parents: FxHashMap<ContainerIdx, Option<ContainerIdx>>,
+    parents: ArenaMap<ContainerIdx, Option<ContainerIdx>>,
     /// All retention roots: top-level user roots **and** mergeable cids. Used by
     /// alive-container / shallow-snapshot retention walks that must see both.
-    root_c_idx: Vec<ContainerIdx>,
+    root_c_idx: im::Vector<ContainerIdx>,
     /// Subset of `root_c_idx` containing only top-level (non-mergeable) roots. This is the
     /// list user-facing APIs enumerate (`preferred_root_containers`, `get_value`,
     /// `get_deep_value`, jsonpath, ...). Keeping it pre-filtered means those paths do
     /// not pay a per-mergeable `is_mergeable()` parse on every call.
-    top_level_root_c_idx: Vec<ContainerIdx>,
+    top_level_root_c_idx: im::Vector<ContainerIdx>,
     /// Optional resolver used when querying parent for a container that has not been registered yet.
     /// If set, `get_parent` will try this resolver to lazily fetch and register the parent.
     ///
@@ -86,7 +117,7 @@ struct InnerSharedArena {
     // mutex so container id/index/parent/depth updates cannot acquire locks in
     // inconsistent orders.
     containers: RwLock<ArenaContainers>,
-    values: Mutex<Vec<LoroValue>>,
+    values: Mutex<im::Vector<ArenaValue>>,
     str: Arc<Mutex<StrArena>>,
 }
 
@@ -149,9 +180,9 @@ impl ArenaContainers {
     /// so the invariant is maintained by construction rather than by remembering to push to two
     /// vectors at every call site.
     fn push_root(&mut self, idx: ContainerIdx, is_mergeable: bool) {
-        self.root_c_idx.push(idx);
+        self.root_c_idx.push_back(idx);
         if !is_mergeable {
-            self.top_level_root_c_idx.push(idx);
+            self.top_level_root_c_idx.push_back(idx);
         }
     }
 
@@ -161,7 +192,7 @@ impl ArenaContainers {
         }
 
         let idx = self.container_idx_to_id.len();
-        self.container_idx_to_id.push(id.clone());
+        self.container_idx_to_id.push_back(ArenaId(id.clone()));
         let idx = ContainerIdx::from_index_and_type(idx as u32, id.container_type());
         self.container_id_to_idx.insert(id.clone(), idx);
         // Resolve the cid's kind once. `is_mergeable` is non-trivial for mergeable names,
@@ -175,7 +206,7 @@ impl ArenaContainers {
             (true, None) => {
                 self.push_root(idx, false);
                 self.parents.insert(idx, None);
-                self.depth.push(NonZeroU16::new(1));
+                self.depth.push_back(NonZeroU16::new(1));
             }
             (true, Some((parent_id, _key, _kind))) => {
                 // Mergeable Roots are retention roots AND logical children. Push to `root_c_idx`
@@ -185,12 +216,12 @@ impl ArenaContainers {
                 // deliberately absent from `top_level_root_c_idx` so user-facing root
                 // enumeration does not have to filter them out.
                 self.push_root(idx, true);
-                self.depth.push(None);
+                self.depth.push_back(None);
                 let parent_idx = self.register_container(&parent_id);
                 self.set_parent(idx, Some(parent_idx));
             }
             (false, _) => {
-                self.depth.push(None);
+                self.depth.push_back(None);
             }
         }
         idx
@@ -238,7 +269,7 @@ impl ArenaContainers {
                 // `parents` entry. But for ordinary children whose parent isn't in the arena
                 // yet, fall back to the resolver.
                 let resolver = self.parent_resolver.clone()?;
-                let parent_id = resolver(id)?;
+                let parent_id = resolver(id.0)?;
                 // Route through `register_container` so a freshly-discovered parent (especially
                 // a mergeable cid) lands in `root_c_idx`, gets its own parent edge wired up,
                 // and has `parents` initialized — instead of being half-registered with just
@@ -273,7 +304,7 @@ impl ArenaContainers {
     fn container_id(&self, idx: ContainerIdx) -> Option<ContainerID> {
         self.container_idx_to_id
             .get(idx.to_index() as usize)
-            .cloned()
+            .map(|id| id.0.clone())
     }
 }
 
@@ -385,11 +416,17 @@ impl SharedArena {
                 // A cached depth may have been computed through a dropped link, also for the
                 // descendants of a container registered before the checkpoint. Roots and
                 // links that are kept give the same depth again.
-                containers.depth.fill(None);
+                for depth in containers.depth.iter_mut() {
+                    *depth = None;
+                }
             }
         }
 
-        self.inner.values.lock().truncate(checkpoint.values_len);
+        {
+            let mut values = self.inner.values.lock();
+            let len = checkpoint.values_len.min(values.len());
+            values.truncate(len);
+        }
         self.inner.str.lock().rollback(checkpoint.str);
     }
 
@@ -438,7 +475,14 @@ impl SharedArena {
     #[inline]
     pub fn with_idx_to_id<R>(&self, f: impl FnOnce(&Vec<ContainerID>) -> R) -> R {
         let containers = self.inner.containers.read();
-        f(&containers.container_idx_to_id)
+        let ids: Vec<_> = containers
+            .container_idx_to_id
+            .iter()
+            .map(|id| id.0.clone())
+            .collect();
+        #[cfg(any(test, feature = "test_utils"))]
+        crate::cow_work::arena_callback_materialized(ids.len());
+        f(&ids)
     }
 
     pub fn alloc_str(&self, str: &str) -> StrAllocResult {
@@ -493,7 +537,7 @@ impl SharedArena {
             .iter()
             .enumerate()
             .filter(|(_, id)| {
-                matches!(id, ContainerID::Normal { peer: p, counter, .. }
+                matches!(&id.0, ContainerID::Normal { peer: p, counter, .. }
                     if *p == peer && *counter >= start_counter)
             })
             .map(|(i, id)| ContainerIdx::from_index_and_type(i as u32, id.container_type()))
@@ -665,28 +709,45 @@ impl SharedArena {
 
     #[inline]
     pub fn get_value(&self, idx: usize) -> Option<LoroValue> {
-        self.inner.values.lock().get(idx).cloned()
+        self.inner
+            .values
+            .lock()
+            .get(idx)
+            .map(|value| value.0.clone())
     }
 
     #[inline]
     pub fn get_values(&self, range: Range<usize>) -> Vec<LoroValue> {
-        (self.inner.values.lock()[range]).to_vec()
+        let values = self.inner.values.lock();
+        assert!(
+            range.start <= range.end && range.end <= values.len(),
+            "value range out of bounds"
+        );
+        range.map(|i| values[i].0.clone()).collect()
     }
 
     /// Whether the values in two ranges are equal, without cloning them.
     pub(crate) fn value_slices_eq(&self, a: Range<usize>, b: Range<usize>) -> bool {
         let values = self.inner.values.lock();
-        match (values.get(a), values.get(b)) {
-            (Some(a), Some(b)) => a == b,
-            _ => false,
+        if a.start > a.end || b.start > b.end || a.end > values.len() || b.end > values.len() {
+            return false;
         }
+        a.len() == b.len() && a.zip(b).all(|(a, b)| values[a].0 == values[b].0)
     }
 
-    /// Borrow the values in `range` without cloning them (unlike
-    /// [`Self::get_values`], which clones into a fresh `Vec`).
+    /// Present a contiguous copy of the requested values while holding the arena lock.
+    /// Persistent primary storage is gathered only for this explicitly contiguous API.
     #[inline]
     pub fn with_values<R>(&self, range: Range<usize>, f: impl FnOnce(&[LoroValue]) -> R) -> R {
-        f(&self.inner.values.lock()[range])
+        let values = self.inner.values.lock();
+        assert!(
+            range.start <= range.end && range.end <= values.len(),
+            "value range out of bounds"
+        );
+        let gathered: Vec<_> = range.map(|i| values[i].0.clone()).collect();
+        #[cfg(any(test, feature = "test_utils"))]
+        crate::cow_work::arena_callback_materialized(gathered.len());
+        f(&gathered)
     }
 
     pub fn convert_single_op(
@@ -829,7 +890,13 @@ impl SharedArena {
 
     #[inline]
     pub fn export_containers(&self) -> Vec<ContainerID> {
-        self.inner.containers.read().container_idx_to_id.clone()
+        self.inner
+            .containers
+            .read()
+            .container_idx_to_id
+            .iter()
+            .map(|id| id.0.clone())
+            .collect()
     }
 
     pub fn export_parents(&self) -> Vec<Option<ContainerIdx>> {
@@ -855,7 +922,13 @@ impl SharedArena {
     /// user-visible top-level roots should use [`Self::top_level_root_containers`].
     #[inline]
     pub(crate) fn root_containers(&self, _f: LoadAllFlag) -> Vec<ContainerIdx> {
-        self.inner.containers.read().root_c_idx.clone()
+        self.inner
+            .containers
+            .read()
+            .root_c_idx
+            .iter()
+            .copied()
+            .collect()
     }
 
     /// Returns only the user-visible top-level root containers (excludes mergeable cids).
@@ -865,7 +938,13 @@ impl SharedArena {
     /// keeps these calls O(top_level_roots) instead of O(top_level_roots + mergeable_cids).
     #[inline]
     pub(crate) fn top_level_root_containers(&self, _f: LoadAllFlag) -> Vec<ContainerIdx> {
-        self.inner.containers.read().top_level_root_c_idx.clone()
+        self.inner
+            .containers
+            .read()
+            .top_level_root_c_idx
+            .iter()
+            .copied()
+            .collect()
     }
 
     // TODO: this can return a u16 directly now, since the depths are always valid
@@ -915,14 +994,14 @@ impl SharedArena {
         let values = self.inner.values.lock();
         range
             .into_iter()
-            .map(move |i| values.get(i).unwrap().clone())
+            .map(move |i| values.get(i).unwrap().0.clone())
     }
 
     #[allow(unused)]
     pub(crate) fn log_all_values(&self) {
         let values = self.inner.values.lock();
         for (i, v) in values.iter().enumerate() {
-            loro_common::debug!("value {} {:?}", i, v);
+            loro_common::debug!("value {} {:?}", i, v.0);
         }
     }
 }
@@ -937,20 +1016,22 @@ fn _alloc_str_with_slice(
 }
 
 fn _alloc_values(
-    values_lock: &mut MutexGuard<'_, Vec<LoroValue>>,
+    values_lock: &mut MutexGuard<'_, im::Vector<ArenaValue>>,
     values: impl Iterator<Item = LoroValue>,
 ) -> Range<usize> {
-    values_lock.reserve(values.size_hint().0);
     let start = values_lock.len();
     for value in values {
-        values_lock.push(value);
+        values_lock.push_back(ArenaValue(value));
     }
 
     start..values_lock.len()
 }
 
-fn _alloc_value(values_lock: &mut MutexGuard<'_, Vec<LoroValue>>, value: LoroValue) -> usize {
-    values_lock.push(value);
+fn _alloc_value(
+    values_lock: &mut MutexGuard<'_, im::Vector<ArenaValue>>,
+    value: LoroValue,
+) -> usize {
+    values_lock.push_back(ArenaValue(value));
     values_lock.len() - 1
 }
 
@@ -1000,6 +1081,90 @@ mod tests {
         atomic::{AtomicBool, Ordering},
         Arc,
     };
+
+    #[test]
+    fn cow_value_tail_and_id_registrations_keep_owner_local_rollback() {
+        let source = SharedArena::new();
+        assert_eq!(
+            source.alloc_values((0..257).map(|v| LoroValue::I64(v))),
+            0..257
+        );
+        let ids: Vec<_> = (0..129)
+            .map(|i| ContainerID::new_normal(ID::new(7, i), ContainerType::Map))
+            .collect();
+        let indices: Vec<_> = ids.iter().map(|id| source.register_container(id)).collect();
+        crate::cow_work::reset();
+        let branch = source.fork_cow();
+        let fork_work = crate::cow_work::take();
+        assert!(fork_work.arena_value_entries_cloned <= 64);
+        assert!(fork_work.arena_id_entries_cloned <= 64);
+        let checkpoint = branch.checkpoint_for_rollback();
+        crate::cow_work::reset();
+        assert_eq!(branch.alloc_value(LoroValue::I64(999)), 257);
+        let append_work = crate::cow_work::take();
+        assert!(append_work.arena_value_entries_cloned <= 64);
+        eprintln!("ARENA_VALUE_WORK fork={fork_work:?} append={append_work:?}");
+        let new_id = ContainerID::new_normal(ID::new(7, 200), ContainerType::Text);
+        let new_idx = branch.register_container(&new_id);
+        assert_eq!(source.get_value(257), None);
+        assert!(source.get_container_id(new_idx).is_none());
+        let held = branch.fork_cow();
+        branch.rollback(checkpoint);
+        assert_eq!(branch.get_value(257), None);
+        assert_eq!(held.get_value(257), Some(LoroValue::I64(999)));
+        // Container indices, unlike value tails, intentionally survive rollback.
+        assert_eq!(branch.get_container_id(new_idx), Some(new_id.clone()));
+        assert_eq!(held.get_container_id(new_idx), Some(new_id));
+        for (id, idx) in ids.iter().zip(indices) {
+            assert_eq!(source.get_container_id(idx).as_ref(), Some(id));
+            assert_eq!(branch.get_container_id(idx).as_ref(), Some(id));
+        }
+        assert_eq!(source.alloc_value(LoroValue::I64(111)), 257);
+        assert_eq!(branch.alloc_value(LoroValue::I64(222)), 257);
+        assert_eq!(source.get_value(257), Some(LoroValue::I64(111)));
+        assert_eq!(branch.get_value(257), Some(LoroValue::I64(222)));
+        assert_eq!(held.get_value(257), Some(LoroValue::I64(999)));
+        assert_eq!(
+            source.get_values(63..66),
+            vec![LoroValue::I64(63), LoroValue::I64(64), LoroValue::I64(65)]
+        );
+    }
+
+    #[test]
+    fn cow_arena_callbacks_preserve_requested_ranges_and_id_order() {
+        let arena = SharedArena::new();
+        arena.alloc_values((0..129).map(LoroValue::I64));
+        let ids: Vec<_> = (0..129)
+            .map(|i| ContainerID::new_normal(ID::new(7, i), ContainerType::Text))
+            .collect();
+        for id in &ids {
+            arena.register_container(id);
+        }
+        crate::cow_work::reset();
+        assert_eq!(arena.with_idx_to_id(Clone::clone), ids);
+        assert_eq!(
+            arena.with_values(63..66, |v| v.to_vec()),
+            vec![LoroValue::I64(63), LoroValue::I64(64), LoroValue::I64(65)]
+        );
+        assert_eq!(arena.with_values(129..129, |v| v.len()), 0);
+        let callback_work = crate::cow_work::take();
+        assert_eq!(callback_work.arena_callback_entries_materialized, 132);
+        eprintln!("ARENA_CALLBACK_WORK {callback_work:?}");
+        assert!(arena.value_slices_eq(129..129, 0..0));
+        assert!(!arena.value_slices_eq(66..63, 0..0));
+        assert!(!arena.value_slices_eq(129..130, 0..1));
+        // Each invalid request must reach its own range guard, not a mutex
+        // poisoned by the preceding deliberate panic.
+        let other = arena.fork_cow();
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || arena.with_values(66..63, |_| ())
+        ))
+        .is_err());
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || other.with_values(129..130, |_| ())
+        ))
+        .is_err());
+    }
 
     /// When a non-mergeable child is registered, then later asks for its depth and the parent
     /// resolver yields a mergeable cid, the mergeable parent must be registered through the

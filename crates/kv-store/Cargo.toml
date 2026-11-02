@@ -29,3 +29,6 @@ tracing = { workspace = true }
 rand = "0.8.5"
 ctor = "0.2"
 dev-utils = { path = "../dev-utils" }
+
+[features]
+clone_work = []

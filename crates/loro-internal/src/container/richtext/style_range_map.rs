@@ -9,7 +9,7 @@ use std::{
 
 use generic_btree::{
     rle::{CanRemove, HasLength, Mergeable, Sliceable, TryInsert},
-    BTree, BTreeTrait, ElemSlice, LengthFinder, UseLengthFinder,
+    BTreeTrait, ElemSlice, LengthFinder, UseLengthFinder,
 };
 use rustc_hash::FxHashMap;
 
@@ -24,7 +24,7 @@ use super::{AnchorType, StyleKey, StyleOp};
 /// It's initialized with usize::MAX/2 length.
 #[derive(Debug, Clone)]
 pub(super) struct StyleRangeMap {
-    pub(super) tree: BTree<RangeNumMapTrait>,
+    pub(super) tree: generic_btree::CowBTree<RangeNumMapTrait>,
     has_style: bool,
 }
 
@@ -122,7 +122,7 @@ type YieldStyle<'a> = Option<&'a mut dyn FnMut(&Styles, usize)>;
 
 impl StyleRangeMap {
     pub fn new() -> Self {
-        let mut tree = BTree::new();
+        let mut tree = generic_btree::CowBTree::new_cow();
         tree.push(Elem {
             styles: Default::default(),
             len: usize::MAX / 4,
@@ -571,6 +571,9 @@ impl CanRemove for Elem {
         self.len == 0
     }
 }
+
+// Reachable element payloads and cache scalars have no mutable shared cells.
+impl generic_btree::CowBTreeTrait for RangeNumMapTrait {}
 
 impl BTreeTrait for RangeNumMapTrait {
     type Elem = Elem;
