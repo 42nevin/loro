@@ -116,3 +116,8 @@ cell; p99 is descriptive and noisy. Actual small one-block application Updates
 can offer no cached whole-block or selective-decode opportunity. Re-run the
 example and preserve its raw JSON plus toolchain/machine information when making
 performance claims.
+
+A separate fresh-process requested-heap/RSS experiment for the stored Update
+reader, with pre-generated fixtures and a compact-result sensitivity control,
+is documented in [update-block-reuse-memory.md](update-block-reuse-memory.md).
+It adds no production changes or new latency claims.
