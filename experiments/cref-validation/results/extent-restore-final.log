@@ -1,0 +1,48 @@
+warning: unused import: `logging::log::*`
+  --> crates/loro-common/src/lib.rs:21:9
+   |
+21 | pub use logging::log::*;
+   |         ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `loro-common` (lib) generated 1 warning (run `cargo fix --lib -p loro-common` to apply 1 suggestion)
+   Compiling loro-internal v1.16.2 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal)
+warning: method `as_str` is never used
+    --> crates/loro-internal/src/container/richtext/richtext_state.rs:1011:12
+     |
+ 998 | impl RichtextStateChunk {
+     | ----------------------- method in this implementation
+...
+1011 |     pub fn as_str(&self) -> Option<std::borrow::Cow<'_, str>> {
+     |            ^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `as_str` and `unicode_slice` are never used
+   --> crates/loro-internal/src/container/richtext/richtext_state.rs:380:16
+    |
+338 |     impl TextChunk {
+    |     -------------- methods in this implementation
+...
+380 |         pub fn as_str(&self) -> std::borrow::Cow<'_, str> {
+    |                ^^^^^^
+...
+530 |         pub fn unicode_slice(
+    |                ^^^^^^^^^^^^^
+
+   Compiling loro v1.16.2 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro)
+warning: `loro-internal` (lib) generated 2 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.43s
+     Running tests/extent_restore.rs (experiment-home/Gits/Redelkasten/builds/loro-shared-arena/x86_64-unknown-linux-gnu/debug/deps/extent_restore-4f3fbbf604378034)
+
+running 6 tests
+test invalid_later_descriptor_rolls_back_valid_prefix_and_arena ... ok
+test wrong_supplied_lamport_is_rejected_before_history_publication ... ok
+test missing_dependency_remains_pending_until_original_parent_arrives ... ok
+test failed_resolution_aborts_restore_and_poisoned_candidate_cleanup_is_isolated ... ok
+test logical_restore_keeps_handles_after_wire_export_and_middle_edit ... ok
+test typed_restore_preserves_concurrent_ids_cuts_deletes_and_native_sync ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

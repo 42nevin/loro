@@ -706,35 +706,37 @@ impl Transaction {
         if unicode_len == 0 {
             return Ok(());
         }
-        let content = RawOpContent::List(crate::container::list::list_op::ListOp::Insert {
-            slice: crate::op::ListSlice::RawStr {
-                str: Cow::Borrowed(std::str::from_utf8(&slice).unwrap()),
-                unicode_len,
-            },
-            pos,
-        });
-        let retained = slice.clone();
-        self.apply_local_op_converted(
-            container,
-            content,
-            EventHint::InsertText {
-                pos: pos as u32,
-                styles: StyleMeta::default(),
-                unicode_len: unicode_len as u32,
-                event_len: unicode_len as u32,
-            },
-            doc,
-            move |_, raw| Op {
-                counter: raw.id.counter,
+        slice.with_str("txn.apply_generated", |text| {
+            let content = RawOpContent::List(crate::container::list::list_op::ListOp::Insert {
+                slice: crate::op::ListSlice::RawStr {
+                    str: Cow::Borrowed(text),
+                    unicode_len,
+                },
+                pos,
+            });
+            let retained = slice.clone();
+            self.apply_local_op_converted(
                 container,
-                content: InnerContent::List(InnerListOp::InsertText {
-                    slice: retained,
-                    unicode_start: info.start as u32,
-                    unicode_len: unicode_len as u32,
+                content,
+                EventHint::InsertText {
                     pos: pos as u32,
-                }),
-            },
-        )
+                    styles: StyleMeta::default(),
+                    unicode_len: unicode_len as u32,
+                    event_len: unicode_len as u32,
+                },
+                doc,
+                move |_, raw| Op {
+                    counter: raw.id.counter,
+                    container,
+                    content: InnerContent::List(InnerListOp::InsertText {
+                        slice: retained,
+                        unicode_start: info.start as u32,
+                        unicode_len: unicode_len as u32,
+                        pos: pos as u32,
+                    }),
+                },
+            )
+        })
     }
 
     pub(super) fn apply_local_op(

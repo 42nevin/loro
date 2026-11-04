@@ -114,7 +114,7 @@ fn text_len(s: &str) -> usize {
 }
 
 /// Style runs of a pure-insertion text diff, or `None` if it is not one.
-fn text_runs(diff: &TextDiff) -> Option<Vec<(&str, &TextMeta)>> {
+fn text_runs(diff: &TextDiff) -> Option<Vec<(std::borrow::Cow<'_, str>, &TextMeta)>> {
     let mut ans = Vec::new();
     for item in diff.iter() {
         let DeltaItem::Replace {
@@ -132,17 +132,17 @@ fn text_runs(diff: &TextDiff) -> Option<Vec<(&str, &TextMeta)>> {
 
 /// The pieces of `runs` that cover the byte range `range` of their concatenated text.
 fn slice_runs<'a>(
-    runs: &[(&'a str, &'a TextMeta)],
+    runs: &'a [(std::borrow::Cow<'_, str>, &'a TextMeta)],
     range: std::ops::Range<usize>,
 ) -> Vec<(&'a str, &'a TextMeta)> {
     let mut ans = Vec::new();
     let mut offset = 0;
-    for &(text, attr) in runs {
+    for (text, attr) in runs {
         let (start, end) = (offset, offset + text.len());
         offset = end;
         let (from, to) = (range.start.max(start), range.end.min(end));
         if from < to {
-            ans.push((&text[from - start..to - start], attr));
+            ans.push((&text[from - start..to - start], *attr));
         }
     }
     ans
@@ -219,8 +219,8 @@ fn push_restyled_retain(
 fn align_text(target: &TextDiff, current: &TextDiff) -> Option<TextDiff> {
     let target = text_runs(target)?;
     let current = text_runs(current)?;
-    let target_text: String = target.iter().map(|(s, _)| *s).collect();
-    let current_text: String = current.iter().map(|(s, _)| *s).collect();
+    let target_text: String = target.iter().map(|(s, _)| s.as_ref()).collect();
+    let current_text: String = current.iter().map(|(s, _)| s.as_ref()).collect();
     let (t, c) = (target_text.as_bytes(), current_text.as_bytes());
     let mut prefix = t.iter().zip(c).take_while(|(x, y)| x == y).count();
     while !target_text.is_char_boundary(prefix) {

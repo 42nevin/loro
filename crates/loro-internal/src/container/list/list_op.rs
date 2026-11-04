@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use append_only_bytes::BytesSlice;
+use crate::text_slice::TextSlice as BytesSlice;
 use enum_as_inner::EnumAsInner;
 use loro_common::{ContainerType, HasId, HasIdSpan, IdLp, LoroError, LoroResult, LoroValue, ID};
 use rle::{HasLength, Mergable, Sliceable};
@@ -650,28 +650,29 @@ impl Sliceable for InnerListOp {
                 pos,
             } => InnerListOp::InsertText {
                 slice: {
-                    // SAFETY: we know it's a valid utf8 string
-                    let s = unsafe { std::str::from_utf8_unchecked(slice) };
-                    let total_unicode_len = *unicode_len as usize;
-                    let total_bytes_len = slice.len();
-                    let (from_byte, to_byte) = if total_bytes_len == total_unicode_len {
-                        // ASCII fast path: unicode index equals byte offset.
-                        (from, to)
-                    } else {
-                        let from_byte = if from == 0 {
-                            0
+                    slice.with_str("op.unicode_slice", |s| {
+                        let total_unicode_len = *unicode_len as usize;
+                        let total_bytes_len = slice.len();
+                        let (from_byte, to_byte) = if total_bytes_len == total_unicode_len {
+                            // ASCII fast path: unicode index equals byte offset.
+                            (from, to)
                         } else {
-                            unicode_to_utf8_index(s, from).expect("unicode index should be valid")
+                            let from_byte = if from == 0 {
+                                0
+                            } else {
+                                unicode_to_utf8_index(s, from)
+                                    .expect("unicode index should be valid")
+                            };
+                            let to_byte = if to == total_unicode_len {
+                                total_bytes_len
+                            } else {
+                                unicode_to_utf8_index(s, to).expect("unicode index should be valid")
+                            };
+                            (from_byte, to_byte)
                         };
-                        let to_byte = if to == total_unicode_len {
-                            total_bytes_len
-                        } else {
-                            unicode_to_utf8_index(s, to).expect("unicode index should be valid")
-                        };
-                        (from_byte, to_byte)
-                    };
 
-                    slice.slice(from_byte, to_byte)
+                        slice.slice(from_byte, to_byte)
+                    })
                 },
                 unicode_start: *unicode_start + from as u32,
                 unicode_len: (to - from) as u32,
@@ -691,7 +692,7 @@ impl Sliceable for InnerListOp {
 
 #[cfg(test)]
 mod test {
-    use append_only_bytes::BytesSlice;
+    use crate::text_slice::TextSlice as BytesSlice;
     use loro_common::ID;
     use rle::{HasLength as _, Mergable, Sliceable};
     use std::time::Instant;

@@ -124,13 +124,29 @@ impl RichtextState {
         for span in self.state.get_mut().iter_chunk() {
             match span {
                 RichtextStateChunk::Text(text_chunk) => {
-                    if !callback(text_chunk.as_str()) {
+                    if !text_chunk.with_str("state.iter", |s| callback(s)) {
                         return;
                     }
                 }
                 RichtextStateChunk::Style { .. } => {}
             }
         }
+    }
+
+    /// Experimental correctness-only diagnostic of actual live text backing.
+    /// Reads metadata in either loader elements or the live tree without
+    /// resolving extents, decoding the tree, scanning history or copying text.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(crate) fn text_backing_info(&self) -> Vec<crate::text_slice::TextBackingInfo> {
+        let mut info = Vec::new();
+        self.iter_raw(&mut |chunk| {
+            if let RichtextStateChunk::Text(text) = chunk {
+                if !text.bytes().is_empty() {
+                    info.push(text.bytes().backing_info());
+                }
+            }
+        });
+        info
     }
 
     pub(crate) fn iter_raw(&self, callback: &mut dyn FnMut(&RichtextStateChunk)) {
@@ -330,7 +346,7 @@ impl RichtextState {
             let next_attr = span.attributes.to_option_map();
             match delta.last_mut() {
                 Some(TextDelta::Insert { insert, attributes }) if &next_attr == attributes => {
-                    insert.push_str(span.text.as_str());
+                    insert.push_str(&span.text.as_str());
                     continue;
                 }
                 _ => {}
@@ -347,6 +363,90 @@ impl RichtextState {
 #[cfg(test)]
 mod tests {
     use crate::{container::richtext::StyleKey, cursor::PosType, handler::HandlerTrait, LoroDoc};
+
+    #[cfg(feature = "shared_arena_experiment")]
+    #[test]
+    fn backing_diagnostic_is_metadata_only_after_real_docstate_middle_edit() {
+        use crate::{
+            arena::TextExtentAllocator,
+            text_slice::{ExtentResolver, TextSlice},
+        };
+        use std::{
+            io,
+            ops::Range,
+            sync::{
+                atomic::{AtomicBool, AtomicUsize, Ordering},
+                Arc, OnceLock,
+            },
+        };
+        struct Resolver {
+            bytes: OnceLock<Vec<u8>>,
+            reads: AtomicUsize,
+            forbid_reads: AtomicBool,
+        }
+        impl ExtentResolver for Resolver {
+            fn with_bytes(
+                &self,
+                extent: u64,
+                range: Range<usize>,
+                _consumer: &'static str,
+                visit: &mut dyn FnMut(&[u8]),
+            ) -> io::Result<()> {
+                assert!(
+                    !self.forbid_reads.load(Ordering::SeqCst),
+                    "diagnostic resolved payload"
+                );
+                assert_eq!(extent, 73);
+                self.reads.fetch_add(1, Ordering::SeqCst);
+                visit(&self.bytes.get().unwrap()[range]);
+                Ok(())
+            }
+        }
+        struct Allocator(Arc<Resolver>);
+        impl TextExtentAllocator for Allocator {
+            fn allocate_text(
+                &mut self,
+                len: usize,
+                generate: &mut dyn FnMut(&mut [u8]),
+            ) -> io::Result<TextSlice> {
+                let mut bytes = vec![0; len];
+                generate(&mut bytes);
+                self.0.bytes.set(bytes).unwrap();
+                Ok(TextSlice::extent(self.0.clone(), 73, 0..len))
+            }
+        }
+        let resolver = Arc::new(Resolver {
+            bytes: OnceLock::new(),
+            reads: AtomicUsize::new(0),
+            forbid_reads: AtomicBool::new(false),
+        });
+        let doc = LoroDoc::new_auto_commit();
+        let text = doc.get_text("text");
+        text.insert_generated_unicode(0, 9, &mut Allocator(resolver.clone()), |dst| {
+            let mut offset = 0;
+            for c in ['a', '玉', '🙂', 'b'] {
+                let len = c.len_utf8();
+                c.encode_utf8(&mut dst[offset..offset + len]);
+                offset += len;
+            }
+        })
+        .unwrap();
+        text.delete_unicode(1, 1).unwrap();
+        let reads_before = resolver.reads.load(Ordering::SeqCst);
+        resolver.forbid_reads.store(true, Ordering::SeqCst);
+        let info = text
+            .with_state(|state| Ok(state.as_richtext_state().unwrap().text_backing_info()))
+            .unwrap();
+        assert_eq!(resolver.reads.load(Ordering::SeqCst), reads_before);
+        assert_eq!(info.len(), 2);
+        assert!(info
+            .iter()
+            .all(|i| i.kind == "extent" && i.extent == Some(73)));
+        assert_eq!(info[0].range, 0..1);
+        assert_eq!(info[1].range, 4..9);
+        resolver.forbid_reads.store(false, Ordering::SeqCst);
+        assert_eq!(text.to_string(), "a🙂b");
+    }
 
     #[test]
     fn has_style_key_in_entity_range_basic() {
@@ -1252,7 +1352,7 @@ impl RichtextStateLoader {
         let mut text = String::with_capacity(len);
         for elem in &self.elements {
             if let RichtextStateChunk::Text(chunk) = elem {
-                text.push_str(chunk.as_str());
+                chunk.with_str("state.export_text", |s| text.push_str(s));
             }
         }
         text

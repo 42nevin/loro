@@ -1,0 +1,88 @@
+warning: unused import: `logging::log::*`
+  --> crates/loro-common/src/lib.rs:21:9
+   |
+21 | pub use logging::log::*;
+   |         ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `loro-common` (lib) generated 1 warning (run `cargo fix --lib -p loro-common` to apply 1 suggestion)
+   Compiling loro-internal v1.16.2 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal)
+warning: variable does not need to be mutable
+   --> crates/loro-internal/src/macros.rs:35:17
+    |
+ 35 |             let mut m = $crate::version::VersionVector::default();
+    |                 ----^
+    |                 |
+    |                 help: remove this `mut`
+    |
+   ::: crates/loro-internal/src/container/richtext/tracker.rs:846:21
+    |
+846 |         t.checkout(&vv!());
+    |                     ----- in this macro invocation
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+    = note: this warning originates in the macro `vv` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: variable does not need to be mutable
+    --> crates/loro-internal/src/state/container_store/inner_store.rs:1022:13
+     |
+1022 |         let mut source = InnerStore::new(arena.clone(), Configure::default());
+     |             ----^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> crates/loro-internal/src/state/container_store.rs:1011:17
+     |
+1011 |             let mut state = doc.app_state().lock();
+     |                 ----^^^^^
+     |                 |
+     |                 help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> crates/loro-internal/src/state/container_store.rs:1079:17
+     |
+1079 |             let mut state = doc.app_state().lock();
+     |                 ----^^^^^
+     |                 |
+     |                 help: remove this `mut`
+
+warning: method `as_str` is never used
+    --> crates/loro-internal/src/container/richtext/richtext_state.rs:1011:12
+     |
+ 998 | impl RichtextStateChunk {
+     | ----------------------- method in this implementation
+...
+1011 |     pub fn as_str(&self) -> Option<std::borrow::Cow<'_, str>> {
+     |            ^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `as_str` is never used
+   --> crates/loro-internal/src/container/richtext/richtext_state.rs:380:16
+    |
+338 |     impl TextChunk {
+    |     -------------- method in this implementation
+...
+380 |         pub fn as_str(&self) -> std::borrow::Cow<'_, str> {
+    |                ^^^^^^
+
+warning: method `dead_cache_entry` is never used
+   --> crates/loro-internal/src/state/dead_containers_cache.rs:112:19
+    |
+ 38 | impl DocState {
+    | ------------- method in this implementation
+...
+112 |     pub(crate) fn dead_cache_entry(&self, idx: ContainerIdx) -> Option<bool> {
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: `loro-internal` (lib test) generated 7 warnings (run `cargo fix --lib -p loro-internal --tests` to apply 4 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 35.43s
+     Running unittests src/lib.rs (experiment-home/Gits/Redelkasten/builds/loro-shared-arena/x86_64-unknown-linux-gnu/debug/deps/loro_internal-feb8f1696ebe1893)
+
+running 1 test
+test state::richtext_state::tests::backing_diagnostic_is_metadata_only_after_real_docstate_middle_edit ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 433 filtered out; finished in 0.00s
+

@@ -1016,6 +1016,62 @@ impl LoroDoc {
         })
     }
 
+    /// Restore text history directly from typed immutable-extent descriptors.
+    /// This takes the native change-import path, preserving original atom IDs and
+    /// dependencies, without reconstructing JSON text or a wire snapshot.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub fn import_extent_descriptors(
+        &self,
+        changes: Vec<crate::extent_restore::ExtentChangeDescriptor>,
+    ) -> LoroResult<ImportStatus> {
+        self.with_barrier(|| {
+            let result = self.import_changes_and_apply_delta_to_state_if_needed(
+                |oplog| crate::extent_restore::decode_extent_changes(changes, oplog),
+                ImportedValues::Exact,
+                Default::default(),
+            );
+            self.emit_events();
+            result
+        })
+    }
+
+    /// Inspect committed text-operation backing metadata for qualification.
+    /// This commits pending local edits and scans history. Do not use it inside a
+    /// latency sample. Retained logical extents are not resolved. Serialized
+    /// native-only blocks can still be parsed by the normal history iterator.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub fn inspect_text_op_backings(&self) -> Vec<crate::text_slice::TextBackingInfo> {
+        self.with_barrier(|| {
+            let oplog = self.oplog.lock();
+            let mut result = Vec::new();
+            for change in oplog.iter_changes_peer_by_peer(&VersionVector::default(), oplog.vv()) {
+                for op in change.ops.iter() {
+                    if let InnerContent::List(InnerListOp::InsertText { slice, .. }) = &op.content {
+                        result.push(slice.backing_info());
+                    }
+                }
+            }
+            result
+        })
+    }
+
+    /// Correctness-only metadata scan. Unloaded containers are not decoded.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub fn inspect_text_backings(&self) -> crate::text_slice::TextBackingSnapshot {
+        let ops = self.inspect_text_op_backings();
+        let arena = self.arena.inspect_text_backings();
+        let mut snapshot = crate::text_slice::TextBackingSnapshot {arena, ops, ..Default::default()};
+        let state = self.state.lock();
+        snapshot.unloaded_containers_unknown = state.visit_loaded_container_states(|_, state| {
+            match state {
+                Some(crate::state::State::RichtextState(text)) => snapshot.state.extend(text.text_backing_info()),
+                Some(_) => {},
+                None => snapshot.unloaded_containers += 1,
+            }
+        });
+        snapshot
+    }
+
     pub fn export_json_updates(
         &self,
         start_vv: &VersionVector,

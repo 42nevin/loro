@@ -1,5 +1,6 @@
 use super::{state::DocState, txn::Transaction};
 use crate::sync::Mutex;
+use crate::text_slice::TextSlice as BytesSlice;
 use crate::{
     container::{
         idx::ContainerIdx,
@@ -18,7 +19,6 @@ use crate::{
     utils::{string_slice::StringSlice, utf16::count_utf16_len},
     LoroDoc, LoroDocInner,
 };
-use append_only_bytes::BytesSlice;
 use enum_as_inner::EnumAsInner;
 use generic_btree::rle::HasLength;
 use loro_common::{
@@ -1771,7 +1771,7 @@ impl TextHandler {
                 let t = t.lock();
                 t.value
                     .iter()
-                    .map(|span| span.text.as_str().to_owned())
+                    .map(|span| span.text.as_str().into_owned())
                     .collect()
             }
             MaybeDetached::Attached(a) => a.with_state(|state| {
@@ -2995,7 +2995,7 @@ impl TextHandler {
                         Some(TextDelta::Insert { insert, attributes })
                             if &next_attr == attributes =>
                         {
-                            insert.push_str(span.text.as_str());
+                            insert.push_str(&span.text.as_str());
                             continue;
                         }
                         _ => {}

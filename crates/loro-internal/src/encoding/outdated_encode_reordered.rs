@@ -142,7 +142,9 @@ mod encode {
                     Value::LoroValue(value.into())
                 }
                 crate::container::list::list_op::InnerListOp::InsertText { slice, .. } => {
-                    Value::Str(std::str::from_utf8(slice.as_bytes()).unwrap())
+                    return slice.with_str("wire.encode_op", |s| {
+                        Value::Str(s).encode(value_writer, registers).0
+                    })
                 }
                 crate::container::list::list_op::InnerListOp::Delete(span) => {
                     delete_start.push(EncodedDeleteStartId {

@@ -2423,6 +2423,26 @@ impl ContainerTrait for LoroText {
 
 #[cfg(feature = "shared_arena_experiment")]
 pub use loro_internal::arena::{TextAllocationContext, TextExtentAllocator};
+#[cfg(feature = "shared_arena_experiment")]
+pub use loro_internal::extent_restore::{ExtentChangeDescriptor, ExtentOpDescriptor, ExtentTextOp};
+pub use loro_internal::text_slice::{ExtentResolver, TextBackingInfo, TextBackingSnapshot, TextSlice};
+#[cfg(feature = "shared_arena_experiment")]
+pub use loro_internal::text_slice::{reset_text_copy_metrics, text_copy_metrics, TextCopyCount};
+#[cfg(feature = "shared_arena_experiment")]
+impl LoroDoc {
+    /// Correctness-only scan of actual retained insertion operands, outside timings.
+    pub fn inspect_text_op_backings(&self) -> Vec<TextBackingInfo> {self.doc.inspect_text_op_backings()}
+    /// Correctness-only backing metadata for arena, OpLog and loaded live state.
+    pub fn inspect_text_backings(&self) -> TextBackingSnapshot {self.doc.inspect_text_backings()}
+    /// Restore typed text operations and their original causal metadata from logical extents.
+    /// This experimental path does not reconstruct JSON payloads or a native snapshot.
+    pub fn import_extent_descriptors(
+        &self,
+        descriptors: Vec<ExtentChangeDescriptor>,
+    ) -> LoroResult<ImportStatus> {
+        self.doc.import_extent_descriptors(descriptors)
+    }
+}
 
 impl LoroText {
     /// Experimental storage reservation insertion using Unicode positions.

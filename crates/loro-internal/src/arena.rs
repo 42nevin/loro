@@ -30,11 +30,25 @@ pub trait TextExtentAllocator {
         &mut self,
         byte_len: usize,
         generate: &mut dyn FnMut(&mut [u8]),
-    ) -> std::io::Result<append_only_bytes::BytesSlice>;
+    ) -> std::io::Result<append_only_bytes::BytesSlice> {
+        let _ = (byte_len, generate);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "implement allocate or allocate_text",
+        ))
+    }
+    fn allocate_text(
+        &mut self,
+        byte_len: usize,
+        generate: &mut dyn FnMut(&mut [u8]),
+    ) -> std::io::Result<crate::text_slice::TextSlice> {
+        self.allocate(byte_len, generate).map(Into::into)
+    }
 }
 
 use self::str_arena::{StrArena, StrArenaCheckpoint};
 use crate::sync::{Mutex, MutexGuard, RwLock, RwLockWriteGuard};
+use crate::text_slice::TextSlice as BytesSlice;
 use crate::{
     change::Lamport,
     container::{
@@ -47,7 +61,6 @@ use crate::{
     op::{InnerContent, ListSlice, Op, RawOp, RawOpContent, SliceRange},
     LoroValue,
 };
-use append_only_bytes::BytesSlice;
 use loro_common::{PeerID, ID};
 use rustc_hash::FxHasher;
 use std::fmt;
@@ -550,7 +563,7 @@ impl SharedArena {
         // code and its failure must not poison otherwise unchanged document state.
         let slice = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             allocator.begin_allocation(context)?;
-            allocator.allocate(byte_len, &mut checked)
+            allocator.allocate_text(byte_len, &mut checked)
         }))
         .map_err(|_| std::io::Error::other("text allocator or generator panicked"))??;
         if calls != 1 || slice.len() != byte_len {
@@ -559,7 +572,10 @@ impl SharedArena {
                 "invalid generated reservation",
             ));
         }
-        std::str::from_utf8(&slice)
+        slice
+            .try_with_bytes("arena.generated.validate", |b| {
+                std::str::from_utf8(b).map(|_| ())
+            })?
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         let mut arena = self.inner.str.lock();
         let start = arena.len_unicode();
@@ -571,6 +587,28 @@ impl SharedArena {
                 end: arena.len_unicode(),
             },
         ))
+    }
+
+    /// Metadata-only qualification scan, never use for per-edit work.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub fn inspect_text_backings(&self) -> Vec<crate::text_slice::TextBackingInfo> {
+        self.inner.str.lock().inspect_text_backings()
+    }
+
+    /// Adopt native or logical text backing without materializing its payload.
+    pub fn alloc_text_slice(&self, slice: BytesSlice) -> std::io::Result<StrAllocResult> {
+        slice
+            .try_with_bytes("arena.restore.validate", |b| {
+                std::str::from_utf8(b).map(|_| ())
+            })?
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let mut arena = self.inner.str.lock();
+        let start = arena.len_unicode();
+        arena.alloc_sealed(slice);
+        Ok(StrAllocResult {
+            start,
+            end: arena.len_unicode(),
+        })
     }
 
     /// alloc str without extra info

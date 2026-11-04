@@ -325,7 +325,7 @@ fn list_op_eq(arena: &SharedArena, exact: bool, a: &InnerListOp, b: &InnerListOp
                 pos: b_pos,
                 ..
             },
-        ) => a_pos == b_pos && a_len == b_len && a_slice[..] == b_slice[..],
+        ) => a_pos == b_pos && a_len == b_len && a_slice == b_slice,
         (InnerListOp::Delete(a), InnerListOp::Delete(b)) => {
             // A one-atom delete has no direction: `signed_len` 1 and -1 delete the
             // same element, and which one is stored depends on how it was sliced.

@@ -1,0 +1,167 @@
+warning: unused import: `logging::log::*`
+  --> crates/loro-common/src/lib.rs:21:9
+   |
+21 | pub use logging::log::*;
+   |         ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `loro-common` (lib) generated 1 warning (run `cargo fix --lib -p loro-common` to apply 1 suggestion)
+warning: method `as_str` is never used
+    --> crates/loro-internal/src/container/richtext/richtext_state.rs:1011:12
+     |
+ 998 | impl RichtextStateChunk {
+     | ----------------------- method in this implementation
+...
+1011 |     pub fn as_str(&self) -> Option<std::borrow::Cow<'_, str>> {
+     |            ^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `as_str` and `unicode_slice` are never used
+   --> crates/loro-internal/src/container/richtext/richtext_state.rs:380:16
+    |
+338 |     impl TextChunk {
+    |     -------------- methods in this implementation
+...
+380 |         pub fn as_str(&self) -> std::borrow::Cow<'_, str> {
+    |                ^^^^^^
+...
+530 |         pub fn unicode_slice(
+    |                ^^^^^^^^^^^^^
+
+warning: `loro-internal` (lib) generated 2 warnings
+   Compiling loro v1.16.2 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.71s
+     Running tests/extent_restore.rs (experiment-home/Gits/Redelkasten/builds/loro-shared-arena/x86_64-unknown-linux-gnu/debug/deps/extent_restore-4f3fbbf604378034)
+
+running 1 test
+
+thread 'failed_resolution_aborts_restore_and_failed_candidate_is_discarded' (98) panicked at crates/loro-internal/src/text_slice.rs:69:41:
+text extent resolution failed: Custom { kind: Other, error: "injected extent read failure" }
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: core::result::unwrap_failed
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:1867:5
+   3: <core::result::Result<loro_internal::container::richtext::richtext_state::text_chunk::TextChunk, std::io::error::Error>>::expect
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:1185:23
+   4: <loro_internal::text_slice::TextSlice>::with_bytes::<loro_internal::container::richtext::richtext_state::text_chunk::TextChunk, <loro_internal::text_slice::TextSlice>::with_str<loro_internal::container::richtext::richtext_state::text_chunk::TextChunk, <loro_internal::container::richtext::richtext_state::text_chunk::TextChunk as generic_btree::rle::Sliceable>::split::{closure#0}>::{closure#0}>
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/text_slice.rs:69:41
+   5: <loro_internal::text_slice::TextSlice>::with_str::<loro_internal::container::richtext::richtext_state::text_chunk::TextChunk, <loro_internal::container::richtext::richtext_state::text_chunk::TextChunk as generic_btree::rle::Sliceable>::split::{closure#0}>
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/text_slice.rs:72:14
+   6: <loro_internal::container::richtext::richtext_state::text_chunk::TextChunk as generic_btree::rle::Sliceable>::split
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/container/richtext/richtext_state.rs:813:22
+   7: <loro_internal::container::richtext::richtext_state::RichtextStateChunk as generic_btree::rle::Sliceable>::split
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/container/richtext/richtext_state.rs:1070:71
+   8: <generic_btree::LeafNode<loro_internal::container::richtext::richtext_state::RichtextStateChunk>>::split
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/generic-btree/src/lib.rs:277:34
+   9: <generic_btree::BTree<loro_internal::container::richtext::richtext_state::RichtextTreeTrait, generic_btree::storage::Cow>>::split_leaf_if_needed
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/generic-btree/src/lib.rs:657:33
+  10: <generic_btree::BTree<loro_internal::container::richtext::richtext_state::RichtextTreeTrait, generic_btree::storage::Cow>>::insert_by_path
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/generic-btree/src/lib.rs:571:30
+  11: <loro_internal::container::richtext::richtext_state::RichtextState>::insert_at_entity_index::<loro_internal::text_slice::TextSlice>
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/container/richtext/richtext_state.rs:1763:35
+  12: <loro_internal::state::richtext_state::RichtextState as loro_internal::state::ContainerState>::apply_local_op
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/state/richtext_state.rs:921:42
+  13: <alloc::boxed::Box<loro_internal::state::richtext_state::RichtextState> as loro_internal::state::ContainerState>::apply_local_op
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/state.rs:360:23
+  14: <loro_internal::state::State as loro_internal::state::ContainerState>::apply_local_op
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/state.rs:393:1
+  15: <loro_internal::state::DocState>::apply_local_op
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/state.rs:1086:15
+  16: <loro_internal::txn::Transaction>::apply_local_op_converted::<<loro_internal::txn::Transaction>::apply_local_op::{closure#0}>
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/txn.rs:816:15
+  17: <loro_internal::txn::Transaction>::apply_local_op
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/txn.rs:750:14
+  18: <loro_internal::handler::TextHandler>::insert_with_txn_and_attr
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/handler.rs:2222:21
+  19: <loro_internal::handler::TextHandler>::insert_with_txn
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/handler.rs:2126:14
+  20: <loro_internal::handler::TextHandler>::insert::{closure#0}
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/handler.rs:2101:39
+  21: loro_internal::handler::with_txn::<(), <loro_internal::handler::TextHandler>::insert::{closure#0}>
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/handler.rs:5039:20
+  22: <loro_internal::handler::BasicHandler>::with_txn::<(), <loro_internal::handler::TextHandler>::insert::{closure#0}>
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/handler.rs:386:9
+  23: <loro_internal::handler::TextHandler>::insert
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/handler.rs:2101:19
+  24: <loro_internal::handler::TextHandler>::insert_unicode
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/handler.rs:2115:14
+  25: <loro::LoroText>::insert
+             at ./src/lib.rs:2483:22
+  26: extent_restore::failed_resolution_aborts_restore_and_failed_candidate_is_discarded::{closure#1}
+             at ./tests/extent_restore.rs:308:36
+  27: <extent_restore::failed_resolution_aborts_restore_and_failed_candidate_is_discarded::{closure#1} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  28: <core::panic::unwind_safe::AssertUnwindSafe<extent_restore::failed_resolution_aborts_restore_and_failed_candidate_is_discarded::{closure#1}> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panic/unwind_safe.rs:275:9
+  29: std::panicking::catch_unwind::do_call::<core::panic::unwind_safe::AssertUnwindSafe<extent_restore::failed_resolution_aborts_restore_and_failed_candidate_is_discarded::{closure#1}>, ()>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:581:40
+  30: __rust_try
+  31: std::panicking::catch_unwind::<(), core::panic::unwind_safe::AssertUnwindSafe<extent_restore::failed_resolution_aborts_restore_and_failed_candidate_is_discarded::{closure#1}>>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:544:19
+  32: std::panic::catch_unwind::<core::panic::unwind_safe::AssertUnwindSafe<extent_restore::failed_resolution_aborts_restore_and_failed_candidate_is_discarded::{closure#1}>, ()>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panic.rs:359:14
+  33: extent_restore::failed_resolution_aborts_restore_and_failed_candidate_is_discarded
+             at ./tests/extent_restore.rs:307:18
+  34: extent_restore::failed_resolution_aborts_restore_and_failed_candidate_is_discarded::{closure#0}
+             at ./tests/extent_restore.rs:245:72
+  35: <extent_restore::failed_resolution_aborts_restore_and_failed_candidate_is_discarded::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  36: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+thread 'failed_resolution_aborts_restore_and_failed_candidate_is_discarded' (98) panicked at crates/loro-internal/src/sync.rs:34:31:
+poisoned LoroMutex
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: loro_internal::sync::expect_not_poisoned::<std::sync::poison::mutex::MutexGuard<core::option::Option<loro_internal::txn::Transaction>>>::{closure#0}
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/sync.rs:34:31
+   3: <core::result::Result<std::sync::poison::mutex::MutexGuard<core::option::Option<loro_internal::txn::Transaction>>, std::sync::poison::PoisonError<std::sync::poison::mutex::MutexGuard<core::option::Option<loro_internal::txn::Transaction>>>>>::unwrap_or_else::<loro_internal::sync::expect_not_poisoned<std::sync::poison::mutex::MutexGuard<core::option::Option<loro_internal::txn::Transaction>>>::{closure#0}>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/result.rs:1622:23
+   4: loro_internal::sync::expect_not_poisoned::<std::sync::poison::mutex::MutexGuard<core::option::Option<loro_internal::txn::Transaction>>>
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/sync.rs:34:12
+   5: <loro_internal::sync::Mutex<core::option::Option<loro_internal::txn::Transaction>>>::lock_with_kind
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/sync.rs:56:9
+   6: <loro_internal::lock::LoroMutex<core::option::Option<loro_internal::txn::Transaction>>>::lock
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/lock.rs:161:35
+   7: <loro_internal::LoroDoc>::before_commit
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/loro.rs:357:38
+   8: <loro_internal::LoroDoc>::commit_internal
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/loro.rs:401:43
+   9: <loro_internal::LoroDoc>::implicit_commit_then_stop
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/loro.rs:337:27
+  10: <loro_internal::LoroDoc as core::ops::drop::Drop>::drop
+             at /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal/src/lib.rs:191:26
+  11: core::ptr::drop_glue::<loro_internal::LoroDoc>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ptr/mod.rs:825:1
+  12: core::ptr::drop_glue::<loro::LoroDoc>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ptr/mod.rs:825:1
+  13: core::mem::drop::<loro::LoroDoc>
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/mem/mod.rs:1004:1
+  14: extent_restore::failed_resolution_aborts_restore_and_failed_candidate_is_discarded
+             at ./tests/extent_restore.rs:317:5
+  15: extent_restore::failed_resolution_aborts_restore_and_failed_candidate_is_discarded::{closure#0}
+             at ./tests/extent_restore.rs:245:72
+  16: <extent_restore::failed_resolution_aborts_restore_and_failed_candidate_is_discarded::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+  17: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+test failed_resolution_aborts_restore_and_failed_candidate_is_discarded ... FAILED
+
+failures:
+
+failures:
+    failed_resolution_aborts_restore_and_failed_candidate_is_discarded
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.07s
+
+error: test failed, to rerun pass `-p loro --test extent_restore`

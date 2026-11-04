@@ -325,6 +325,16 @@ impl ContainerStore {
         self.store.contains_id(id)
     }
 
+    /// Metadata-only visitor over already resident container wrappers.
+    /// Returns whether the unvisited on-disk count is unknown without a scan.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(crate) fn visit_loaded_container_states(
+        &self,
+        visit: impl FnMut(ContainerIdx, Option<&State>),
+    ) -> bool {
+        self.store.visit_loaded_container_states(visit)
+    }
+
     pub fn iter_all_containers(
         &mut self,
     ) -> impl Iterator<Item = (ContainerIdx, &mut ContainerWrapper)> {

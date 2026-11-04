@@ -1184,6 +1184,17 @@ impl DocState {
         self.store.iter_and_decode_all()
     }
 
+    /// Correctness-only metadata visitor. No lazy container is loaded and no
+    /// CoW state is detached. `None` means a resident but undecoded wrapper;
+    /// the return value marks an unknown possible count of nonresident wrappers.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(crate) fn visit_loaded_container_states(
+        &self,
+        visit: impl FnMut(ContainerIdx, Option<&State>),
+    ) -> bool {
+        self.store.visit_loaded_container_states(visit)
+    }
+
     pub(crate) fn iter_all_containers_mut(
         &mut self,
     ) -> impl Iterator<Item = (ContainerIdx, &mut ContainerWrapper)> {

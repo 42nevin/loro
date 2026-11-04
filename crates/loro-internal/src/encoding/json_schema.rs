@@ -402,7 +402,9 @@ pub(crate) fn encode_change(
                         unicode_len: _,
                         pos,
                     } => {
-                        let text = String::from_utf8(slice.as_bytes().to_vec()).unwrap();
+                        let text =
+                            String::from_utf8(slice.to_vec_for("oracle.json_export"))
+                                .unwrap();
                         json::TextOp::Insert { pos: *pos, text }
                     }
                     InnerListOp::Delete(DeleteSpanWithId {

@@ -1,0 +1,684 @@
+warning: unused import: `logging::log::*`
+  --> crates/loro-common/src/lib.rs:21:9
+   |
+21 | pub use logging::log::*;
+   |         ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `loro-common` (lib) generated 1 warning (run `cargo fix --lib -p loro-common` to apply 1 suggestion)
+   Compiling loro-internal v1.16.2 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal)
+warning: variable does not need to be mutable
+   --> crates/loro-internal/src/macros.rs:35:17
+    |
+ 35 |             let mut m = $crate::version::VersionVector::default();
+    |                 ----^
+    |                 |
+    |                 help: remove this `mut`
+    |
+   ::: crates/loro-internal/src/container/richtext/tracker.rs:846:21
+    |
+846 |         t.checkout(&vv!());
+    |                     ----- in this macro invocation
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+    = note: this warning originates in the macro `vv` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: variable does not need to be mutable
+    --> crates/loro-internal/src/state/container_store/inner_store.rs:1022:13
+     |
+1022 |         let mut source = InnerStore::new(arena.clone(), Configure::default());
+     |             ----^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> crates/loro-internal/src/state/container_store.rs:1011:17
+     |
+1011 |             let mut state = doc.app_state().lock();
+     |                 ----^^^^^
+     |                 |
+     |                 help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> crates/loro-internal/src/state/container_store.rs:1079:17
+     |
+1079 |             let mut state = doc.app_state().lock();
+     |                 ----^^^^^
+     |                 |
+     |                 help: remove this `mut`
+
+warning: method `as_str` is never used
+    --> crates/loro-internal/src/container/richtext/richtext_state.rs:1011:12
+     |
+ 998 | impl RichtextStateChunk {
+     | ----------------------- method in this implementation
+...
+1011 |     pub fn as_str(&self) -> Option<std::borrow::Cow<'_, str>> {
+     |            ^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `as_str` is never used
+   --> crates/loro-internal/src/container/richtext/richtext_state.rs:380:16
+    |
+338 |     impl TextChunk {
+    |     -------------- method in this implementation
+...
+380 |         pub fn as_str(&self) -> std::borrow::Cow<'_, str> {
+    |                ^^^^^^
+
+warning: method `dead_cache_entry` is never used
+   --> crates/loro-internal/src/state/dead_containers_cache.rs:112:19
+    |
+ 38 | impl DocState {
+    | ------------- method in this implementation
+...
+112 |     pub(crate) fn dead_cache_entry(&self, idx: ContainerIdx) -> Option<bool> {
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: `loro-internal` (lib test) generated 7 warnings (run `cargo fix --lib -p loro-internal --tests` to apply 4 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.30s
+     Running unittests src/lib.rs (experiment-home/Gits/Redelkasten/builds/loro-shared-arena/x86_64-unknown-linux-gnu/debug/deps/loro_internal-feb8f1696ebe1893)
+
+running 431 tests
+test allocation::bfs::additional_tests::sort_base_prioritizes_larger_lamport_in_binary_heap ... ok
+test allocation::bfs::additional_tests::bfs_critical_versions_include_linear_cut_points ... ok
+test allocation::dfs::additional_tests::dfs_critical_versions_include_linear_cut_points ... ok
+test allocation::dfs::additional_tests::dfs_critical_versions_exclude_diamond_branches_with_alternate_paths ... ok
+test allocation::bfs::tests::dedupes_shared_dependencies_and_filters_terminal_nodes ... ok
+test allocation::bfs::additional_tests::bfs_critical_versions_skip_start_and_leaf_nodes_in_diamond_graphs ... ok
+test allocation::dfs::additional_tests::end_list_collects_dependency_leaves_from_all_start_frontiers ... ok
+test allocation::dfs::tests::calc_critical_version_dfs_returns_non_start_nodes_when_no_end_is_present ... ok
+test allocation::dfs::tests::calc_critical_version_dfs_skips_candidates_when_an_end_is_on_every_start_path ... ok
+test allocation::dfs::tests::get_end_list_collects_all_leaf_nodes_reachable_from_start ... ok
+test arena::str_arena::test::rollback_truncates_bytes_without_losing_prefix ... ok
+test arena::str_arena::test::parse_unicode_correctly ... ok
+test arena::str_arena::test::external_sealed_owner_rollback_retains_pointer_and_branch ... ok
+test arena::str_arena::test::generated_sealed_owner_rollback_keeps_other_branch ... ok
+test arena::str_arena::test::sealed_prefixes_keep_unicode_slices_and_rollback_branch_local ... ok
+test arena::str_arena::test::slice_long_unicode_correctly ... ok
+test arena::str_arena::test::test ... ok
+test arena::tests::a_container_that_no_op_creates_has_no_parent ... ok
+The application panicked (crashed).
+Message:  value range out of bounds
+Location: crates/loro-internal/src/arena.rs:837
+
+Backtrace omitted.
+
+Run with RUST_BACKTRACE=1 environment variable to display it.
+Run with RUST_BACKTRACE=full to include source snippets.
+The application panicked (crashed).
+Message:  InternalError: Parent is not registered
+Location: crates/loro-internal/src/arena.rs:684
+
+Backtrace omitted.
+
+Run with RUST_BACKTRACE=1 environment variable to display it.
+Run with test arena::tests::creator_resolver_runs_outside_the_arena_lock ... ok
+test arena::tests::set_parent_does_not_resolve_missing_parent_depth ... ok
+RUST_BACKTRACE=full to include source snippets.
+test arena::tests::get_depth_resolver_registers_mergeable_parent_as_retention_root ... ok
+test change::test::size_of_change ... ok
+test configure::tests::configure_default_values_and_setters_match_the_public_contract ... ok
+test arena::tests::cow_value_tail_and_id_registrations_keep_owner_local_rollback ... ok
+The application panicked (crashed).
+Message:  value range out of bounds
+Location: crates/loro-internal/src/arena.rs:837
+
+Backtrace omitted.
+
+Run with RUST_BACKTRACE=1 environment variable to display it.
+Run with RUST_BACKTRACE=full to include source snippets.
+test configure::tests::configure_fork_copies_current_state_and_then_diverges ... ok
+test container::list::list_op::test::perf_insert_text_slice_split_suffix ... ignored
+test container::list::list_op::test::mergeable ... ok
+test configure::tests::default_random_test_mode_uses_the_incrementing_counter_for_integer_helpers ... ok
+test arena::tests::unknown_parent_without_a_creator_resolver_panics - should panic ... ok
+test arena::tests::cow_arena_callbacks_preserve_requested_ranges_and_id_order ... ok
+test container::list::list_op::test::test_del_span_merge_slice ... ok
+test container::list::list_op::test::fix_fields_order ... ok
+test container::map::map_content::test::fix_fields_order ... ok
+test container::richtext::richtext_state::test::continuous_text_insert_should_be_merged ... ok
+test container::richtext::richtext_state::test::continuous_text_insert_should_not_be_merged_when_prev_is_link ... ok
+test container::richtext::richtext_state::test::bold_should_expand ... ok
+test container::richtext::richtext_state::test::bold_and_link_at_the_same_place ... ok
+test container::richtext::richtext_state::test::insert_cache_hit ... ignored
+test container::richtext::richtext_state::test::delete_text ... ok
+test container::richtext::richtext_state::test::link_should_not_expand ... ok
+test container::richtext::richtext_state::test::delete_bold ... ok
+test container::richtext::richtext_state::test::remove_start_anchor_in_the_middle_should_remove_style ... ok
+The application panicked (crashed).
+Message:  InternalError: the parent links of Some(Normal(Map 0@1)) form a cycle
+Location: crates/loro-internal/src/arena.rs:1057
+
+Backtrace omitted.
+
+Run with RUST_BACKTRACE=1 environment variable to display it.
+Run with RUST_BACKTRACE=full to include source snippets.
+test container::richtext::richtext_state::logical_extent_consumer_tests::text_chunk_split_delete_keep_logical_handles_and_scoped_reads ... ok
+test container::richtext::richtext_state::test::continuous_text_insert_should_be_merged_and_have_bold ... ok
+test container::richtext::richtext_state::test::remove_style_anchors_should_also_delete_style ... ok
+test container::richtext::richtext_state::test::remove_start_anchor_should_remove_style ... ok
+test container::richtext::richtext_state::test::test_comments ... ok
+test container::richtext::richtext_state::test::test ... ok
+test arena::tests::a_parent_cycle_fails_fast - should panic ... ok
+test container::richtext::test::test ... ok
+test container::richtext::style_range_map::test::delete_style ... ok
+test container::richtext::style_range_map::test::test_basic_insert ... ok
+test container::richtext::tracker::crdt_rope::test::checkout ... ok
+test container::richtext::tracker::crdt_rope::test::checkout_future ... ok
+test container::richtext::tracker::crdt_rope::test::checkout_future_with_delete ... ok
+test container::richtext::tracker::crdt_rope::test::content_insert_middle ... ok
+test container::richtext::tracker::crdt_rope::test::get_origin_left_and_right ... ok
+test container::richtext::tracker::crdt_rope::test::should_ignore_future_spans_when_getting_origin_left ... ok
+test container::richtext::tracker::crdt_rope::test::content_insert_should_ignore_tombstone ... ok
+The application panicked (crashed).
+Message:  assertion `left == right` failed
+  left: 0
+ right: 3
+Location: crates/loro-internal/src/container/richtext/tracker/id_to_cursor.rs:109
+
+Backtrace omitted.
+
+Run with RUST_BACKTRACE=1 environment variable to display it.
+Run with test container::richtext::tracker::crdt_rope::test::get_origin_left_and_right_among_tombstones ... RUST_BACKTRACE=full to include source snippets.
+ok
+test container::richtext::tracker::crdt_rope::test::update ... ok
+test container::richtext::tracker::id_to_cursor::test::test_id_to_cursor ... ok
+test container::richtext::tracker::id_to_cursor::test::large_update_can_replace_the_tail_range ... ok
+test container::richtext::tracker::test::perf_update_insert_by_split_quadratic ... ignored
+test container::richtext::tracker::id_to_cursor::test::zero_width_small_update_keeps_insert_set_non_empty ... ok
+test container::richtext::tracker::id_to_cursor::test::zero_len_fragment_panics_with_left_0_right_3 ... ok
+test container::richtext::tracker::crdt_rope::test::len_test ... ok
+test container::richtext::tracker::test::perf_update_insert_by_split_quadratic_unknown ... ignored
+test container::test::container_id_raw_reapplies_type_for_root_and_normal_ids ... ok
+test container::richtext::tracker::test::repeated_tail_splits_keep_id_to_cursor_consistent ... ok
+The application panicked (crashed).
+Message:  assertion `left == right` failed
+  left: List
+ right: Map
+Location: crates/loro-internal/src/container.rs:144
+
+Backtrace omitted.
+
+Run with RUST_BACKTRACE=1 environment variable to display it.
+test container::test::container_id_convert ... Run with okRUST_BACKTRACE=full
+ to include source snippets.
+test container::richtext::tracker::test::test_checkout_in_doc_with_del_span ... ok
+test container::test::container_idx_preserves_type_bits_and_index_bits ... ok
+test container::test::into_container_id_uses_root_names_ids_and_arena_indexes ... ok
+test container::richtext::tracker::test::test_retreat_and_forward_delete ... ok
+test container::test::into_container_id_rejects_mismatched_index_type - should panic ... ok
+test container::tree::bool_rle_vec::test::test_bool_rle_vec ... ok
+test container::richtext::tracker::test::test_len ... ok
+test container::tree::bool_rle_vec::test::test_bool_rle_vec_empty ... ok
+test container::tree::bool_rle_vec::test::test_bool_rle_vec_alternating ... ok
+test container::tree::bool_rle_vec::test::test_bool_rle_vec_single_element ... ok
+test container::tree::bool_rle_vec::test::test_bool_rle_vec_long_run ... ok
+test container::tree::bool_rle_vec::test::test_bool_rle_vec_iter_skip ... ok
+test container::tree::bool_rle_vec::test::test_bool_rle_vec_merge ... ok
+test container::tree::bool_rle_vec::test::test_bool_rle_vec_nth ... ok
+test container::tree::bool_rle_vec::test::test_bool_rle_vec_skip ... ok
+test container::tree::bool_rle_vec::test::test_drop_last_n ... ok
+test dag::iter::tests::larger_node_only_advances_consumed_slice ... ok
+test dag::mermaid::tests::break_points_to_output_splits_spans_and_retargets_middle_links_to_span_starts ... ok
+test dag::iter::tests::two_concurrent_same_peer_nodes_visit_in_counter_order ... ok
+test dag::tests::find_path_reports_forward_and_retreat_spans_for_linear_and_branch_paths ... ok
+test dag::tests::import_greater_updates_kept_when_new_ops_depend_on_all_left_heads ... ok
+test dag::tests::get_version_vector_walks_dependencies_once_and_tracks_dep_ids_inside_spans ... ok
+test dag::tests::import_greater_updates_requires_new_ops_after_all_left_heads ... ok
+test dag::mermaid::tests::dag_to_mermaid_includes_peer_subgraphs_split_spans_and_cross_peer_edges ... ok
+test dag::mermaid::tests::to_str_renders_all_links_without_requiring_hash_map_order ... ok
+test dag::iter::tests::stale_iterator_state_repairs_missing_same_peer_continuation ... ok
+test dag::tests::ord_id_span_orders_by_last_lamport_peer_and_shorter_overlapping_span ... ok
+test dag::tests::remove_included_frontiers_drops_only_dependencies_at_or_after_recorded_frontiers ... ok
+test dag::tests::replay_base_criss_cross_ladder_stays_linear ... ok
+test dag::tests::replay_base_does_not_keep_ancestor_of_shared_descendant ... ok
+test dag::tests::replay_base_falls_back_before_unmatched_branch_with_multiple_left_frontiers ... ok
+test dag::tests::replay_base_falls_back_before_independent_branch ... ok
+test dag::tests::replay_base_falls_back_when_right_adds_concurrent_branch_from_shared_root ... ok
+test dag::tests::replay_base_falls_back_when_right_frontiers_add_concurrent_branch ... ok
+test dag::tests::replay_base_falls_back_when_left_frontiers_add_concurrent_branch ... ok
+test dag::tests::replay_base_handles_empty_linear_same_span_and_parent_child_cases ... ok
+test dag::tests::replay_base_ignores_implicit_predecessor_covered_by_explicit_dependency ... ok
+test dag::tests::replay_base_ignores_implicit_predecessor_covered_transitively ... ok
+test dag::tests::replay_base_falls_back_when_walk_reaches_trimmed_history ... ok
+test dag::tests::replay_base_keeps_target_when_checking_out_to_ancestor_with_extra_branch ... ok
+test dag::tests::replay_base_keeps_uncovered_implicit_predecessor_conservative ... ok
+test dag::tests::replay_base_left_empty_stops_linear_scan_at_missing_shallow_dependency ... ok
+test dag::tests::replay_base_marks_cross_peer_direct_dependency_as_greater_update ... ok
+test dag::tests::replay_base_of_parallel_branches_is_shared_dependency ... ok
+test delta::map::tests::compose_add_then_update_keeps_latest_value_in_added ... ok
+test delta::map::tests::compose_delete_then_add_becomes_update_with_original_old_value ... ok
+test delta::map::tests::compose_is_key_local_and_preserves_other_entries ... ok
+test delta::map::tests::compose_multiple_updates_preserves_first_old_and_latest_new ... ok
+test delta::map::tests::compose_update_then_delete_keeps_initial_old_value ... ok
+test delta::map::tests::delete_removes_pending_add_and_records_deleted_value ... ok
+test delta::map::tests::insert_replaces_previous_delete_marker ... ok
+test delta::map_delta::tests::map_delta_compose_does_not_let_older_entries_overwrite_newer_ones ... ok
+test delta::map_delta::tests::map_delta_compose_keeps_latest_timestamp_per_key ... ok
+test delta::map_delta::tests::map_value_serialization_exposes_value_lamport_and_id ... ok
+test delta::map_delta::tests::map_value_ordering_identity_and_hash_are_timestamp_based ... ok
+test delta::map_delta::tests::resolved_map_delta_compose_and_transform_apply_the_same_conflict_contract ... ok
+test delta::map_delta::tests::resolved_unset_uses_max_lamport_to_win_against_material_values ... ok
+test delta::seq::test::delete_delete ... ok
+test delta::seq::test::delete_entire ... ok
+test delta::seq::test::delete_insert ... ok
+test delta::seq::test::delete_retain ... ok
+test delta::seq::test::delete_failed ... ok
+test delta::seq::test::delta_compose ... ok
+test delta::seq::test::delta_push ... ok
+test delta::seq::test::insert_delete ... ok
+test delta::seq::test::insert_insert ... ok
+test delta::seq::test::insert_retain ... ok
+test delta::seq::test::remove_meta ... ok
+test delta::seq::test::retain_delete ... ok
+test delta::seq::test::retain_end_opt_join ... ok
+test delta::seq::test::retain_insert ... ok
+test delta::seq::test::retain_end_opt ... ok
+test delta::seq::test::retain_start_opt ... ok
+test delta::seq::test::retain_more ... ok
+test delta::seq::test::retain_retain ... ok
+test delta::seq::test::retain_start_opt_split ... ok
+test delta::text::tests::style_meta_item_replacement_is_ordered_by_lamport_then_peer ... ok
+test delta::text::tests::style_meta_compose_keeps_latest_value_per_key_and_preserves_new_keys ... ok
+test delta::text::tests::style_meta_value_views_distinguish_null_from_absent ... ok
+test delta::text::tests::text_meta_compose_and_json_roundtrip_are_map_like ... ok
+test diff::diff_impl::tests::test_diff_may_scatter_1 ... ok
+test diff::diff_impl::tests::test_diff_may_scatter ... ok
+test arena::str_arena::test::many_sealed_segments_seek_and_rollback_preserve_other_owners ... ok
+test diff::diff_impl::tests::test_dj_diff_1 ... ok
+test diff::diff_impl::tests::test_dj_diff_may_scatter ... ok
+test diff::diff_impl::tests::test_dj_diff_may_scatter_1 ... ok
+test diff::diff_impl::tests::test_dj_diff_same ... ok
+test diff::diff_impl::tests::test_recording_diff_handler ... ok
+test diff::diff_impl::tests::test_timeout ... ok
+test diff::diff_impl::tests::test_dj_diff_insert ... ok
+test diff_calc::conservative_checkout_replay_filters_to_retreat_changed_containers ... ok
+test diff_calc::causal_existing_peer_import_uses_current_version_as_replay_base ... ok
+test diff_calc::persisted_walk_does_not_duplicate_style_entries ... ok
+test diff_calc::test_size ... ok
+test diff::diff_impl::tests::test_dj_diff_100_differences ... ok
+test encoding::arena::tests::position_arena_rejects_invalid_common_prefix ... ok
+test diff_calc::conservative_replay_only_builds_calculators_for_changed_containers ... ok
+test encoding::fast_snapshot::tests::decode_updates_rejects_truncated_block ... ok
+test encoding::fast_snapshot::tests::full_export_round_trips_malformed_lazy_wrapper_but_shallow_rejects ... ok
+test encoding::fast_snapshot::tests::snapshot_encoded_len_matches_written_len ... ok
+test encoding::json_schema::tests::json_range_version ... ok
+test encoding::outdated_encode_reordered::test::test_value_read_write ... ok
+test encoding::fast_snapshot::tests::full_export_round_trips_lazy_child_parent_conflict_but_shallow_rejects ... ok
+test encoding::shallow_snapshot::tests::byte_heavy_low_op_prefix_exports_correctly ... ok
+test diff::diff_impl::tests::test_diff ... ok
+test encoding::shallow_snapshot::tests::forward_replay_gate_bounds_prefix_by_ops_ratio_and_bytes ... ok
+test diff_calc::tree::test::retreat_bound_follows_the_cached_version ... ok
+test encoding::shallow_snapshot::tests::cached_root_keeps_children_of_unknown_containers ... ok
+test encoding::shallow_snapshot::tests::overlay_keeps_style_values_that_die_after_the_root ... ok
+test encoding::shallow_snapshot::tests::legacy_unredacted_shallow_blob_is_cleaned_on_reexport ... ok
+test encoding::shallow_snapshot::tests::prefix_content_bytes_estimate_counts_nested_style_and_commit_msg_bytes ... ok
+test encoding::shallow_snapshot::tests::overlay_redacts_pairs_dead_at_the_root ... ok
+test encoding::shallow_snapshot::tests::prefix_content_bytes_estimate_counts_unknown_owned_values ... ok
+test encoding::shallow_snapshot::tests::prefix_content_bytes_estimate_counts_value_bytes ... ok
+test encoding::shallow_snapshot::tests::prefix_content_bytes_estimate_counts_style_keys_and_root_names ... ok
+test encoding::shallow_snapshot::tests::shallow_export_nulls_dead_style_values_for_root_and_nested_text ... ok
+test encoding::shallow_snapshot::tests::snapshot_at_alive_walk_error_restores_source ... ok
+test encoding::test::fast_snapshot_envelope_has_exact_length_and_valid_checksum ... ok
+test encoding::test::test_value_encode_size ... ok
+test encoding::value::tests::loro_value_writer_reader_roundtrips_nested_scalars_collections_and_containers ... ok
+test encoding::value::tests::owned_value_conversion_is_lossless_for_all_current_variants ... ok
+test encoding::value::tests::reader_reports_corruption_for_truncated_or_invalid_value_payloads ... ok
+test encoding::value::tests::value_encode_decode_roundtrips_non_loro_value_variants ... ok
+test encoding::value::tests::value_kind_tags_roundtrip_including_future_kinds ... ok
+test event::test::test_text_event ... ok
+test handler::test::attaching_detached_handlers_sets_parent_and_attached_back_reference ... ok
+test handler::test::cross_doc_txn_is_rejected ... ok
+test handler::test::deep_value_with_id_cid_matches_container_id_string ... ok
+test handler::test::deep_value_with_id_uses_lazy_values_for_snapshot_roots ... ok
+test handler::test::fast_snapshot_empty_sstable_meta_is_rejected_on_import ... ok
+test handler::test::fast_snapshot_with_trailing_bytes_is_rejected_by_meta_decoder ... ok
+test handler::test::fast_snapshot_with_trailing_bytes_is_rejected_on_import ... ok
+test handler::test::handler_trait_dispatch_reports_attached_container_identity ... ok
+test handler::test::handler_trait_dispatch_reports_detached_container_identity ... ok
+test dag::tests::replay_base_valid_against_slow_oracle_on_layered_merge_dag ... ok
+test handler::test::lazy_value_reads_do_not_write_stale_snapshot_after_mutation ... ok
+test handler::test::list_slice_deep_value ... ok
+test handler::test::movable_list_slice_deep_value ... ok
+test handler::test::richtext_apply_delta ... ok
+test handler::test::richtext_apply_delta_grows_for_mark_gap ... ok
+test handler::test::richtext_apply_delta_ignores_empty_inserts ... ok
+test handler::test::richtext_apply_delta_marks_without_growth ... ok
+test handler::test::richtext_handler ... ok
+test encoding::shallow_snapshot::tests::reexport_same_shallow_root_after_walk_eviction_keeps_overlay_containers ... ok
+test handler::test::richtext_handler_mark ... ok
+test handler::test::richtext_snapshot ... ok
+test handler::test::text_and_tree_deep_value_with_id ... ok
+test handler::test::text_lazy_event_queries_match_decoded_state ... ok
+test encoding::shallow_snapshot::tests::unknown_types_do_not_shield_unrelated_dead_containers ... ok
+test handler::test::tree_meta ... ok
+test handler::test::text_snapshot_string_queries_do_not_decode_state ... ok
+test handler::test::unknown_handler_reports_identity_without_materializing_value ... ok
+test lock::tests::test_dropping_should_restore_last_lock_info_0 ... ok
+The application panicked (crashed).
+Message:  Locking order violation. Current lock: LockInfo(kind: 2, location: crates/loro-internal/src/lock.rs:358:30), New lock: LockInfo(kind: 1, location: crates/loro-internal/src/lock.rs:361:30)
+Location: crates/loro-internal/src/lock.rs:361
+
+Backtrace omitted.
+
+Run with RUST_BACKTRACE=1 environment variable to display it.
+Run with RUST_BACKTRACE=full to include source snippets.
+test lock::tests::test_dropping_should_restore_last_lock_info_1 - should panic ... ok
+test lock::tests::test_is_locked_functionality ... ok
+test lock::tests::test_lock_kind_enum_values ... ok
+The application panicked (crashed).
+Message:  Locking order violation. Current lock: LockInfo(kind: 3, location: crates/loro-internal/src/lock.rs:309:30), New lock: LockInfo(kind: 1, location: crates/loro-internal/src/lock.rs:310:30)
+Location: crates/loro-internal/src/lock.rs:310
+
+Backtrace omitted.
+
+Run with RUST_BACKTRACE=1 environment variable to display it.
+Run with RUST_BACKTRACE=full to include source snippets.
+test lock::tests::test_locking_order_violation_shows_caller - should panic ... ok
+test lock::tests::test_locking_order_when_dropped_in_order ... ok
+The application panicked (crashed).
+Message:  Locking release order violation. self.this: LockInfo(kind: 1, location: crates/loro-internal/src/lock.rs:332:30), self.last: LockInfo(kind: 0, location: None), current: LockInfo(kind: 2, location: crates/loro-internal/src/lock.rs:333:30)
+Location: crates/loro-internal/src/lock.rs:286
+
+Backtrace omitted.
+
+Run with RUST_BACKTRACE=1 environment variable to display it.
+Run with RUST_BACKTRACE=full to include source snippets.
+test lock::tests::test_locking_order_when_not_dropped_in_reverse_order - should panic ... ok
+test lock::tests::test_nested_locking_same_kind ... ok
+The application panicked (crashed).
+Message:  Locking order violation. Current lock: LockInfo(kind: 3, location: crates/loro-internal/src/lock.rs:406:30), New lock: LockInfo(kind: 1, location: crates/loro-internal/src/lock.rs:409:30)
+Location: crates/loro-internal/src/lock.rs:409
+
+Backtrace omitted.
+
+Run with RUST_BACKTRACE=1 environment variable to display it.
+Run with RUST_BACKTRACE=full to include source snippets.
+test lock::tests::test_panic_message_contains_location_info - should panic ... ok
+The application panicked (crashed).
+Message:  poison the lock
+Location: crates/loro-internal/src/lock.rs:420
+
+Backtrace omitted.
+
+Run with RUST_BACKTRACE=1 environment variable to display it.
+Run with RUST_BACKTRACE=full to include source snippets.
+The application panicked (crashed).
+Message:  poisoned LoroMutex
+Location: crates/loro-internal/src/sync.rs:34
+
+Backtrace omitted.
+
+Run with RUST_BACKTRACE=1 environment variable to display it.
+Run with RUST_BACKTRACE=full to include source snippets.
+test lock::tests::test_poisoned_lock_panics_after_unwind - should panic ... ok
+test handler::test::tree_meta_event ... ok
+test handler::test::list_import_batch_stays_consistent_after_repeated_tail_splits ... ok
+test loro::test::failed_import_json_updates_does_not_emit_or_leave_events ... ok
+test loro::test::failed_import_rolls_back_oplog_and_arena ... ok
+test loro::test::failed_import_restores_pending_changes_that_were_applied_during_import ... ok
+test loro::test::failed_incremental_import_restores_previous_change_store_block ... ok
+test loro::test::import_batch_err_181 ... ok
+test loro::test::import_rejects_huge_sstable_meta_block_count_without_panic ... ok
+test loro::test::import_rejects_malformed_change_block_without_panic ... ok
+test loro::test::independent_fast_path_rejects_deleted_root_name ... ok
+test loro::test::failed_import_json_updates_rolls_back_complex_empty_doc ... ok
+test loro::test::independent_fast_path_rejects_root_name_seen_in_history ... ok
+test loro::test::failed_incremental_import_json_updates_restores_previous_change_store_block ... ok
+test loro::test::independent_fast_path_rejects_root_present_only_in_snapshot_state ... ok
+test loro::test::independent_scalar_root_import_rolls_back_after_state_failure ... ok
+test loro::test::malformed_later_import_json_update_rolls_back_after_valid_prefix_enters_oplog ... ok
+The application panicked (crashed).
+Message:  poison oplog
+Location: crates/loro-internal/src/loro.rs:4155
+
+Backtrace omitted.
+
+Run with RUST_BACKTRACE=1 environment variable to display it.
+Run with RUST_BACKTRACE=full to include source snippets.
+The application panicked (crashed).
+Message:  poisoned LoroMutex
+Location: crates/loro-internal/src/sync.rs:34
+
+Backtrace omitted.
+
+Run with RUST_BACKTRACE=1 environment variable to display it.
+Run with RUST_BACKTRACE=full to include source snippets.
+test loro::test::poisoned_mutex_keeps_follow_up_operations_failed ... ok
+test loro::test::test_sync ... ok
+test macros::test::test_macro ... ok
+test op::content::tests::inner_content_lengths_storage_estimates_slices_and_merges_follow_inner_ops ... ok
+test op::content::tests::raw_op_content_merges_only_mergeable_list_operations ... ok
+test op::content::tests::raw_op_content_reports_lengths_and_static_content_without_borrowing ... ok
+test op::content::tests::visit_created_children_reports_containers_created_by_list_map_and_tree_content ... ok
+test op::test::fix_fields_order ... ok
+test oplog::change_store::block_encode::test::decode_block_rejects_corrupt_payload_without_panic ... ok
+test loro::test::test_checkout ... ok
+test loro::test::repeated_independent_scalar_root_imports_scan_history_once ... ok
+test oplog::change_store::extent_owner_retention_tests::native_wire_export_retains_logical_op_owners ... ok
+test oplog::change_store::block_encode::test::tree_move_payload_is_rejected_without_panic ... ok
+test oplog::change_store::block_encode::test::encode_single_text_edit ... ok
+test oplog::change_store::test::a_doc_with_an_unparsable_block_neither_panics_nor_exports_partial_history ... ok
+test oplog::change_store::test::a_retired_store_resolves_nothing ... ok
+test oplog::change_store::test::a_recorded_parse_failure_does_not_panic_where_no_error_can_be_returned ... ok
+test oplog::change_store::test::cow_failed_block_parse_does_not_publish_enriched_header_or_change_sibling ... ok
+test oplog::change_store::test::cow_unflushed_changes_keep_retained_block_and_sibling_exact ... ok
+test oplog::change_store::test::an_export_that_finds_an_unparsable_block_fails_instead_of_skipping_it ... ok
+test oplog::change_store::test::cow_bytes_to_both_keeps_sibling_and_retained_header_immutable ... ok
+test oplog::change_store::test::decoded_block_lamport_range_matches_counter_range ... ok
+test oplog::change_store::test::lamport_lookup_finds_unflushed_mem_blocks ... ok
+test oplog::change_store::test::rollback_drops_only_blocks_parsed_after_the_checkpoint ... ok
+test oplog::change_store::test::lamport_lookup_reads_kv_only_blocks ... ok
+test oplog::change_store::test::rollback_evicts_older_blocks_cached_during_the_scope ... ok
+test oplog::change_store::test::every_reader_records_an_unparsable_block ... ok
+test oplog::change_store::test::test_change_store ... ok
+test oplog::change_store::test::rollback_restores_unflushed_block_that_was_appended_to ... ok
+test oplog::change_store::test::test_synced_doc ... ok
+test oplog::loro_dag::ensure_vv_for_tests::diamond_dep_ensure_vv_for_does_not_double_set ... ok
+test oplog::loro_dag::ensure_vv_for_tests::fork_lazy_vv_is_owner_local_and_stale_handles_return_exact_values ... ok
+test oplog::loro_dag::ensure_vv_for_tests::import_deps_before_shallow_root_allows_boundary_with_missing_peer ... ok
+test oplog::loro_dag::ensure_vv_for_tests::import_deps_before_shallow_root_allows_missing_non_trimmed_dep ... ok
+test oplog::loro_dag::ensure_vv_for_tests::import_deps_before_shallow_root_rejects_deps_equal_to_root_deps ... ok
+test oplog::loro_dag::ensure_vv_for_tests::import_deps_before_shallow_root_rejects_trimmed_history_dep ... ok
+test oplog::loro_dag::ensure_vv_for_tests::import_journal_rollback_keeps_sibling_dag_metadata_independent ... ok
+test oplog::loro_dag::ensure_vv_for_tests::redundant_dependency_endpoint_union_never_lowers_an_ancestor_counter ... ok
+test oplog::loro_dag::ensure_vv_for_tests::sliced_pending_and_replaced_handles_do_not_replace_canonical_ranges ... ok
+test oplog::pending_changes::test::import_batch_applies_pending_unlocked_within_blob ... ok
+test oplog::change_store::test::root_history_names_reject_oversized_name_without_retaining_it ... ok
+test oplog::pending_changes::test::import_pending ... ok
+test oplog::pending_changes::test::import_batch_multi_blob_unlocks_and_applies_chained_pending ... ok
+test oplog::pending_changes::test::need_deps_pending_import ... ok
+test oplog::change_store::test::the_creator_resolver_reports_an_unparsable_block_instead_of_panicking ... ok
+test oplog::pending_changes::test::pending_import_snapshot ... ok
+test oplog::visible_op_count_tests::cached_visible_op_count_matches_exact ... ok
+The application panicked (crashed).
+Message:  assertion `left == right` failed: InternalError: local op 0@1 created cid:0@1:Map without registering its parent
+  left: None
+ right: Some(Some(ContainerIdx(Tree 0)))
+Location: crates/loro-internal/src/parent.rs:49
+
+Backtrace omitted.
+
+Run with RUST_BACKTRACE=1 environment variable to display it.
+Run with RUST_BACKTRACE=full to include source snippets.
+test parent::test::a_local_op_must_link_the_containers_it_creates - should panic ... ok
+test oplog::pending_changes::test::pending_change_becomes_applicable_after_try_apply_pending ... ok
+test state::container_store::inner_store::tests::cow_cold_decode_failure_does_not_publish_value_or_queue_entry ... ok
+test oplog::pending_changes::test::should_activate_pending_change_when ... ok
+test state::container_store::inner_store::tests::cow_slot_access_preserves_source_version_and_rebinds_after_source_drop ... ok
+test state::container_store::inner_store::tests::decode_twice_does_not_resolve_parent_while_loading_from_kv ... ok
+test state::container_store::inner_store::tests::load_all_does_not_resolve_parent_while_loading_from_kv ... ok
+test state::container_store::inner_store::tests::load_roots_does_not_resolve_parent_while_loading_from_kv ... ok
+test state::container_store::inner_store::tests::cow_same_owner_queue_survives_detach_and_evicts_without_affecting_child ... ok
+test state::container_store::test::combined_ephemeral_parent_and_value_read_does_not_cache_value ... ok
+test state::container_store::test::ephemeral_lazy_read_does_not_cache_value ... ok
+test state::container_store::test::deep_value_read_keeps_imported_state_lazy ... ok
+test state::container_store::test::evicted_entries_stay_readable_when_all_loaded ... ok
+test state::container_store::test::evicted_containers_stay_readable_and_editable ... ok
+test state::container_store::test::first_lazy_read_caches_value ... ok
+test state::container_store::test::evicted_mergeable_child_and_tree_meta_survive_round_trip ... ok
+test state::container_store::inner_store::tests::cow_repeated_fork_disjoint_lazy_reads_keep_cache_bounded_and_tracked ... ok
+test state::container_store::test::handle_reads_bound_cached_container_values ... ok
+test state::container_store::test::snapshot_export_does_not_materialize_map_value_after_key_read ... ok
+test state::container_store::test::snapshot_export_includes_empty_root_without_version_change ... ok
+test state::container_store::test::snapshot_export_includes_new_empty_child ... ok
+test state::container_store::test::snapshot_export_includes_remote_tree_meta ... ok
+test state::container_store::test::snapshot_export_keeps_empty_marker_child_resolvable_without_entry ... ok
+test state::container_store::test::snapshot_export_includes_remote_empty_child ... ok
+test state::container_store::test::snapshot_export_persists_empty_alive_child ... ok
+test state::container_store::test::snapshot_export_keeps_imported_state_lazy ... ok
+test state::list_state::snapshot::tests::list_fast_snapshot_rejects_negative_counter ... ok
+test state::list_state::test::list_fast_snapshot_rejects_corrupt_state_metadata ... ok
+test state::list_state::test::test ... ok
+test state::list_state::test::test_list_fast_snapshot ... ok
+test state::map_state::snapshot::map_snapshot_test::map_fast_snapshot ... ok
+test state::map_state::snapshot::map_snapshot_test::map_fast_snapshot_rejects_corrupt_state_metadata ... ok
+test state::movable_list_state::snapshot::test::movable_list_fast_snapshot_rejects_corrupt_state_metadata ... ok
+test state::movable_list_state::snapshot::test::test_movable_list_snapshot ... ok
+test state::movable_list_state::snapshot::test::test_movable_list_snapshot_size ... ok
+test state::container_store::test::test_container_store_exports_imports ... ok
+test state::movable_list_state::test::basic_handler_ops ... ok
+test state::richtext_state::snapshot::tests::handles_interleaved_pairs ... ok
+test state::richtext_state::snapshot::tests::keeps_alive_and_both_expand_pairs ... ok
+test state::richtext_state::snapshot::tests::redacts_dead_pair_and_is_idempotent ... ok
+test state::richtext_state::snapshot::tests::rejects_malformed_span_structures ... ok
+test state::richtext_state::snapshot::tests::respects_only_pairs_whitelist ... ok
+test state::richtext_state::snapshot::tests::richtext_fast_snapshot_rejects_corrupt_state_metadata ... ok
+test state::richtext_state::snapshot::tests::skips_payload_without_marks ... ok
+test state::richtext_state::tests::has_style_key_in_entity_range_basic ... ok
+test state::richtext_state::tests::has_style_key_in_entity_range_spans_elements ... ok
+test state::test_size ... ok
+test state::tree_state::snapshot::tests::tree_fast_snapshot_orders_same_position_siblings_by_idlp ... ok
+test state::movable_list_state::test::basic_sync ... ok
+test state::tree_state::snapshot::tests::tree_fast_snapshot_rejects_corrupt_state_metadata ... ok
+test state::tree_state::snapshot::tests::tree_fast_snapshot_rejects_negative_node_counter ... ok
+test state::tree_state::snapshot::tests::tree_fast_snapshot_rejects_duplicate_nodes_and_sibling_positions ... ok
+test state::tree_state::snapshot::tests::tree_fast_snapshot_sorts_unordered_siblings ... ok
+test state::unknown_state::tests::unknown_snapshot_roundtrip_preserves_bytes_and_index ... ok
+test state::unknown_state::tests::unknown_state_fork_keeps_container_identity ... ok
+test state::unknown_state::tests::unknown_state_reports_identity_without_material_value ... ok
+test subscription::test::unsubscribe ... ok
+The application panicked (crashed).
+Message:  poison mutex
+Location: crates/loro-internal/src/sync.rs:151
+
+Backtrace omitted.
+
+Run with RUST_BACKTRACE=1 environment variable to display it.
+Run with RUST_BACKTRACE=full to include source snippets.
+The application panicked (crashed).
+Message:  poisoned mutex
+Location: crates/loro-internal/src/sync.rs:34
+
+Backtrace omitted.
+
+Run with RUST_BACKTRACE=1 environment variable to display it.
+Run with RUST_BACKTRACE=full to include source snippets.
+test sync::tests::mutex_lock_panics_after_poison - should panic ... ok
+test subscription::test::test_recursive_events ... ok
+The application panicked (crashed).
+Message:  poison rwlock
+Location: crates/loro-internal/src/sync.rs:164
+
+Backtrace omitted.
+
+Run with RUST_BACKTRACE=1 environment variable to display it.
+Run with RUST_BACKTRACE=full to include source snippets.
+The application panicked (crashed).
+Message:  poisoned rwlock
+Location: crates/loro-internal/src/sync.rs:34
+
+Backtrace omitted.
+
+Run with RUST_BACKTRACE=1 environment variable to display it.
+Run with RUST_BACKTRACE=full to include source snippets.
+test sync::tests::rwlock_read_panics_after_poison - should panic ... ok
+test state::container_store::test::stale_queue_entry_after_lazy_to_state_conversion ... ok
+test tests::import_atomicity::binary_move_of_unknown_movable_list_elem_is_rejected_atomically ... ok
+test tests::import_atomicity::corrupt_snapshot_import_rolls_back_empty_doc ... ok
+test tests::import_atomicity::binary_forged_move_behind_same_blob_dependency_is_rejected ... ok
+test tests::import_atomicity::failed_dependency_import_rolls_back_single_pending_change ... ok
+test tests::import_atomicity::failed_dependency_import_rolls_back_multiple_pending_changes ... ok
+test tests::import_atomicity::failed_import_does_not_emit_events ... ok
+test tests::import_atomicity::failed_import_batch_reparks_prebatch_pending_changes ... ok
+test tests::import_atomicity::failed_import_batch_trims_only_its_own_entry_from_a_shared_pending_slot ... ok
+test tests::import_atomicity::failed_import_reparks_only_preexisting_pending_changes ... ok
+test tests::import_atomicity::import_batch_keeps_explicitly_detached_doc_detached ... ok
+The application panicked (crashed).
+Message:  batch import failpoint
+Location: crates/loro-internal/src/loro.rs:87
+
+Backtrace omitted.
+
+Run with RUST_BACKTRACE=1 environment variable to display it.
+Run with RUST_BACKTRACE=full to include source snippets.
+test tests::import_atomicity::failed_import_keeps_multi_peer_frontiers_intact ... ok
+test tests::import_atomicity::import_batch_with_move_of_unknown_movable_list_elem_rolls_back ... ok
+test tests::import_atomicity::import_batch_panic_leaves_doc_attached ... ok
+test tests::import_atomicity::malformed_json_import_returns_error_without_mutating_doc ... ok
+test tests::import_atomicity::outdated_update_on_shallow_doc_is_dropped_not_pending ... ok
+test tests::op_count::len_ops_is_available_while_state_is_locked_with_local_ops ... ok
+test tests::op_count::len_ops_prefers_exact_oplog_value_when_lock_order_allows ... ok
+test tests::import_atomicity::snapshot_import_rejects_corrupt_inner_sstable_with_valid_envelope_checksum ... ok
+test tests::op_count::len_ops_tracks_snapshot_import_while_state_is_locked ... ok
+test tests::import_atomicity::import_batch_with_unappliable_update_stays_attached_and_rolls_back ... ok
+test tests::op_count::visible_op_count_cache_rolls_back_after_failed_pending_activation ... ok
+test tests::op_count::visible_op_count_cache_tracks_pending_activation ... ok
+test tests::replay_base::critical_base_may_cut_between_style_start_and_end ... ok
+test tests::replay_base::disjoint_histories_have_no_cut_below_the_meet ... ok
+test tests::replay_base::fixpoint_returns_the_greatest_cut ... ok
+test tests::replay_base::multi_head_critical_base_on_criss_cross_sync ... ok
+test tests::replay_base::persisted_walks_do_not_duplicate_style_entries ... ok
+test encoding::shallow_snapshot::tests::cached_root_with_forged_parent_header_never_drops_referenced_containers ... ok
+test tests::replay_base::criss_cross_sync_never_rebuilds_the_list_tracker ... ok
+test tests::replay_base::straddling_walks_never_duplicate_style_entries ... ok
+test tests::size_of ... ok
+test txn::tests::txn_creation_rolls_back_in_txn_after_peer_conflict ... ok
+test utils::kv_wrapper::tests::remove_same_streams_different_stores ... ok
+test utils::kv_wrapper::tests::set_all_applies_precollected_updates ... ok
+test utils::string_slice::tests::bytes_slice_variant_keeps_append_only_slice_semantics ... ok
+test utils::string_slice::tests::logical_extent_splits_read_scoped_without_retaining_materialization ... ok
+test utils::string_slice::tests::owned_slice_insert_and_merge_respect_capacity_contracts ... ok
+test utils::string_slice::tests::owned_slice_lengths_and_unicode_boundaries_use_logical_char_indices ... ok
+test utils::string_slice::tests::serde_display_default_and_range_conversion_are_string_like ... ok
+test utils::subscription::test::concurrent_insert_and_emit_do_not_panic ... ok
+test utils::subscription::test::insert_during_emit_does_not_panic ... ok
+test utils::subscription::test::test_inner_subscription_drop ... ok
+test utils::subscription::test::test_inner_subscription_drop_2 ... ok
+test utils::utf16::tests::test_2_byte ... ok
+test utils::utf16::tests::test_3_byte ... ok
+test utils::utf16::tests::test_4_byte ... ok
+test utils::utf16::tests::test_ascii ... ok
+test utils::utf16::tests::test_crazy_emoji_bytes ... ok
+test utils::utf16::tests::test_empty_string ... ok
+test utils::utf16::tests::test_long_string ... ok
+test utils::utf16::tests::test_single_char ... ok
+test utils::utf16::tests::test_utf8_with_bom ... ok
+test utils::utf16::tests::test_utf8_with_null_char ... ok
+test value::tests::apply_creates_missing_nested_values_from_path_and_diff_hint ... ok
+test value::tests::apply_diff_updates_string_list_and_map_values ... ok
+test value::tests::text_delta_json_roundtrip_preserves_attributes_and_operation_order ... ok
+test value::tests::text_diff_json_splits_replace_with_insert_and_delete_entries ... ok
+test value::tests::unresolved_container_handlers_apply_as_default_collection_values ... ok
+test version::frontiers::tests::test_frontiers_edge_cases ... ok
+test version::frontiers::tests::test_frontiers_encode_decode ... ok
+test version::frontiers::tests::test_frontiers_push_insert_remove ... ok
+test version::frontiers::tests::test_frontiers_retain ... ok
+test version::tests::cmp::test ... ok
+test version::tests::im ... ok
+test version::tests::test_encode_decode_im_version_vector ... ok
+test tests::replay_base::style_straddling_base_converges_in_every_import_order ... ok
+test version::tests::test_version_vector_encoding_decoding ... ok
+test tests::replay_base::criss_cross_sync_never_rebuilds_the_text_tracker ... ok
+test dag::tests::replay_base_valid_against_slow_oracle_on_all_pairs_in_small_random_dags ... ok
+test handler::test::richtext_handler_concurrent ... ok
+test tests::replay_base::randomized_sync_never_exhausts_the_search_budget ... ok
+test dag::tests::replay_base_valid_against_slow_oracle_on_random_dags ... ok
+test container::richtext::richtext_state::insert_pos_cache_test::cached_insert_position_matches_cold_lookup_near_style_anchors ... ok
+test dag::tests::replay_base_valid_against_slow_oracle_on_branchy_random_dags ... ok
+
+test result: ok. 427 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 5.44s
+

@@ -15,8 +15,11 @@
 pub mod arena;
 pub mod diff;
 pub mod diff_calc;
+#[cfg(feature = "shared_arena_experiment")]
+pub mod extent_restore;
 pub mod handler;
 pub mod sync;
+pub mod text_slice;
 pub use state::container_tree;
 
 use crate::sync::{AtomicBool, AtomicUsize};

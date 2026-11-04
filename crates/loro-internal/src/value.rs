@@ -278,7 +278,7 @@ impl ApplyDiff for LoroValue {
                                         unicode_to_utf8_index(&s, index + *delete).unwrap(),
                                     )
                                 };
-                                s.replace_range(start..end, value.as_str());
+                                s.replace_range(start..end, &value.as_str());
                                 index += value.len_bytes();
                             }
                         }
@@ -368,7 +368,7 @@ impl ApplyDiff for LoroValue {
                                 attr: _,
                                 delete,
                             } => {
-                                s.replace_range(index..index + *delete, value.as_str());
+                                s.replace_range(index..index + *delete, &value.as_str());
                                 index += value.len_bytes();
                             }
                         }
@@ -1057,7 +1057,7 @@ pub mod wasm {
                     js_sys::Reflect::set(
                         &obj,
                         &JsValue::from_str("insert"),
-                        &JsValue::from_str(value.as_str()),
+                        &value.with_str("wasm.output", JsValue::from_str),
                     )
                     .unwrap();
                     if !meta.is_empty() {
@@ -1134,7 +1134,7 @@ pub mod wasm {
                     js_sys::Reflect::set(
                         &obj,
                         &JsValue::from_str("insert"),
-                        &JsValue::from_str(value.as_str()),
+                        &value.with_str("wasm.output", JsValue::from_str),
                     )
                     .unwrap();
                     if !attr.is_empty() {

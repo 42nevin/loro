@@ -1,0 +1,58 @@
+warning: unused import: `logging::log::*`
+  --> crates/loro-common/src/lib.rs:21:9
+   |
+21 | pub use logging::log::*;
+   |         ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `loro-common` (lib) generated 1 warning (run `cargo fix --lib -p loro-common` to apply 1 suggestion)
+   Compiling loro-internal v1.16.2 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal)
+warning: method `as_str` is never used
+    --> crates/loro-internal/src/container/richtext/richtext_state.rs:1011:12
+     |
+ 998 | impl RichtextStateChunk {
+     | ----------------------- method in this implementation
+...
+1011 |     pub fn as_str(&self) -> Option<std::borrow::Cow<'_, str>> {
+     |            ^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `as_str` and `unicode_slice` are never used
+   --> crates/loro-internal/src/container/richtext/richtext_state.rs:380:16
+    |
+338 |     impl TextChunk {
+    |     -------------- methods in this implementation
+...
+380 |         pub fn as_str(&self) -> std::borrow::Cow<'_, str> {
+    |                ^^^^^^
+...
+530 |         pub fn unicode_slice(
+    |                ^^^^^^^^^^^^^
+
+   Compiling loro v1.16.2 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro)
+warning: `loro-internal` (lib) generated 2 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.99s
+     Running tests/native_cow_fork.rs (experiment-home/Gits/Redelkasten/builds/loro-shared-arena/x86_64-unknown-linux-gnu/debug/deps/native_cow_fork-03bc63c5bd98bd71)
+
+running 4 tests
+test alternatives_and_abandonment_do_not_mutate_the_base ... ok
+test native_fork_keeps_shallow_history_and_rejects_detached_views ... ok
+test shallow_nested_parent_paths_survive_cold_forks_and_branch_of_branch ... ok
+test styled_growth_keeps_held_forks_and_nested_containers_independent ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.58s
+
+     Running tests/shared_arena_experiment.rs (experiment-home/Gits/Redelkasten/builds/loro-shared-arena/x86_64-unknown-linux-gnu/debug/deps/shared_arena_experiment-c988e81667bd46fc)
+
+running 6 tests
+test allocation_error_and_generator_panic_leave_no_atom_or_alias ... ok
+test invalid_generated_utf8_does_not_publish_an_atom ... ok
+test cleared_style_history_is_rejected_before_generation_if_anchors_remain ... ok
+test allocation_context_is_actual_and_rejection_precedes_generation ... ok
+test generated_gestum_cuts_survive_guard_drop_reopen_and_native_update ... ok
+test tiny_extents_unicode_middle_edits_cow_and_concurrent_native_sync ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

@@ -1,0 +1,111 @@
+warning: unused import: `logging::log::*`
+  --> crates/loro-common/src/lib.rs:21:9
+   |
+21 | pub use logging::log::*;
+   |         ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `loro-common` (lib) generated 1 warning (run `cargo fix --lib -p loro-common` to apply 1 suggestion)
+warning: variable does not need to be mutable
+   --> crates/loro-internal/src/macros.rs:35:17
+    |
+ 35 |             let mut m = $crate::version::VersionVector::default();
+    |                 ----^
+    |                 |
+    |                 help: remove this `mut`
+    |
+   ::: crates/loro-internal/src/container/richtext/tracker.rs:846:21
+    |
+846 |         t.checkout(&vv!());
+    |                     ----- in this macro invocation
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+    = note: this warning originates in the macro `vv` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: variable does not need to be mutable
+    --> crates/loro-internal/src/state/container_store/inner_store.rs:1022:13
+     |
+1022 |         let mut source = InnerStore::new(arena.clone(), Configure::default());
+     |             ----^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> crates/loro-internal/src/state/container_store.rs:1011:17
+     |
+1011 |             let mut state = doc.app_state().lock();
+     |                 ----^^^^^
+     |                 |
+     |                 help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> crates/loro-internal/src/state/container_store.rs:1079:17
+     |
+1079 |             let mut state = doc.app_state().lock();
+     |                 ----^^^^^
+     |                 |
+     |                 help: remove this `mut`
+
+warning: method `as_str` is never used
+    --> crates/loro-internal/src/container/richtext/richtext_state.rs:1011:12
+     |
+ 998 | impl RichtextStateChunk {
+     | ----------------------- method in this implementation
+...
+1011 |     pub fn as_str(&self) -> Option<std::borrow::Cow<'_, str>> {
+     |            ^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `as_str` is never used
+   --> crates/loro-internal/src/container/richtext/richtext_state.rs:380:16
+    |
+338 |     impl TextChunk {
+    |     -------------- method in this implementation
+...
+380 |         pub fn as_str(&self) -> std::borrow::Cow<'_, str> {
+    |                ^^^^^^
+
+warning: method `dead_cache_entry` is never used
+   --> crates/loro-internal/src/state/dead_containers_cache.rs:112:19
+    |
+ 38 | impl DocState {
+    | ------------- method in this implementation
+...
+112 |     pub(crate) fn dead_cache_entry(&self, idx: ContainerIdx) -> Option<bool> {
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: `loro-internal` (lib test) generated 7 warnings (run `cargo fix --lib -p loro-internal --tests` to apply 4 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
+     Running unittests src/lib.rs (experiment-home/Gits/Redelkasten/builds/loro-shared-arena/x86_64-unknown-linux-gnu/debug/deps/loro_internal-feb8f1696ebe1893)
+
+running 25 tests
+test container::richtext::richtext_state::logical_extent_consumer_tests::text_chunk_split_delete_keep_logical_handles_and_scoped_reads ... ok
+test container::richtext::richtext_state::test::bold_should_expand ... ok
+test container::richtext::richtext_state::test::bold_and_link_at_the_same_place ... ok
+test container::richtext::richtext_state::test::continuous_text_insert_should_be_merged ... ok
+test container::richtext::richtext_state::test::insert_cache_hit ... ignored
+test container::richtext::richtext_state::test::continuous_text_insert_should_be_merged_and_have_bold ... ok
+test container::richtext::richtext_state::test::continuous_text_insert_should_not_be_merged_when_prev_is_link ... ok
+test container::richtext::richtext_state::test::delete_text ... ok
+test container::richtext::richtext_state::test::remove_style_anchors_should_also_delete_style ... ok
+test container::richtext::richtext_state::test::remove_start_anchor_in_the_middle_should_remove_style ... ok
+test container::richtext::richtext_state::test::delete_bold ... ok
+test container::richtext::richtext_state::test::test ... ok
+test state::richtext_state::snapshot::tests::keeps_alive_and_both_expand_pairs ... ok
+test state::richtext_state::snapshot::tests::handles_interleaved_pairs ... ok
+test container::richtext::richtext_state::test::test_comments ... ok
+test state::richtext_state::snapshot::tests::redacts_dead_pair_and_is_idempotent ... ok
+test state::richtext_state::snapshot::tests::rejects_malformed_span_structures ... ok
+test container::richtext::richtext_state::test::link_should_not_expand ... ok
+test container::richtext::richtext_state::test::remove_start_anchor_should_remove_style ... ok
+test state::richtext_state::snapshot::tests::richtext_fast_snapshot_rejects_corrupt_state_metadata ... ok
+test state::richtext_state::snapshot::tests::skips_payload_without_marks ... ok
+test state::richtext_state::snapshot::tests::respects_only_pairs_whitelist ... ok
+test state::richtext_state::tests::has_style_key_in_entity_range_basic ... ok
+test state::richtext_state::tests::has_style_key_in_entity_range_spans_elements ... ok
+test container::richtext::richtext_state::insert_pos_cache_test::cached_insert_position_matches_cold_lookup_near_style_anchors ... ok
+
+test result: ok. 24 passed; 0 failed; 1 ignored; 0 measured; 405 filtered out; finished in 1.51s
+

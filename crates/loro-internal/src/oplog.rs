@@ -1548,7 +1548,7 @@ pub(crate) fn local_op_to_remote(
                     contents.push(RawOpContent::List(list_op::ListOp::Insert {
                         slice: ListSlice::RawStr {
                             unicode_len: *len as usize,
-                            str: Cow::Owned(std::str::from_utf8(slice).unwrap().to_owned()),
+                            str: Cow::Owned(String::from_utf8(slice.to_vec_for("oplog.raw_op")).expect("validated text")),
                         },
                         pos: *pos as usize,
                     }));

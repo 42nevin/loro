@@ -1,6 +1,6 @@
-use std::{fmt::Debug, ops::Deref};
+use std::{borrow::Cow, fmt::Debug};
 
-use append_only_bytes::BytesSlice;
+use crate::text_slice::TextSlice as BytesSlice;
 use generic_btree::rle::{HasLength, Mergeable, Sliceable, TryInsert};
 use rle::Mergable;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -19,7 +19,9 @@ pub struct StringSlice {
 
 impl PartialEq for StringSlice {
     fn eq(&self, other: &Self) -> bool {
-        self.as_str() == other.as_str()
+        self.with_str("string_slice.eq", |left| {
+            other.with_str("string_slice.eq", |right| left == right)
+        })
     }
 }
 
@@ -45,6 +47,12 @@ impl From<BytesSlice> for StringSlice {
     }
 }
 
+impl From<append_only_bytes::BytesSlice> for StringSlice {
+    fn from(s: append_only_bytes::BytesSlice) -> Self {
+        Self::new(s)
+    }
+}
+
 impl From<&str> for StringSlice {
     fn from(s: &str) -> Self {
         Self {
@@ -55,25 +63,42 @@ impl From<&str> for StringSlice {
 
 impl Debug for StringSlice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StringSlice")
-            .field("bytes", &self.as_str())
-            .finish()
+        self.with_str("string_slice.debug", |text| {
+            f.debug_struct("StringSlice").field("bytes", &text).finish()
+        })
     }
 }
 
 impl StringSlice {
-    pub fn new(s: BytesSlice) -> Self {
-        std::str::from_utf8(&s).unwrap();
+    pub fn new(s: impl Into<BytesSlice>) -> Self {
+        let s = s.into();
+        s.with_bytes("string_slice.validate", |bytes| {
+            std::str::from_utf8(bytes).unwrap();
+        });
         Self {
             bytes: Variant::BytesSlice(s),
         }
     }
 
-    pub fn as_str(&self) -> &str {
+    /// Returns a temporary materialization for logical extents, never caches it.
+    pub fn as_str(&self) -> Cow<'_, str> {
         match &self.bytes {
-            // SAFETY: `bytes` is always valid utf8
-            Variant::BytesSlice(s) => unsafe { std::str::from_utf8_unchecked(s) },
-            Variant::Owned(s) => s,
+            Variant::BytesSlice(s) => s.as_str_for("string_slice.as_str"),
+            Variant::Owned(s) => Cow::Borrowed(s),
+        }
+    }
+
+    pub fn with_str<R>(&self, consumer: &'static str, visit: impl FnOnce(&str) -> R) -> R {
+        match &self.bytes {
+            Variant::BytesSlice(s) => s.with_str(consumer, visit),
+            Variant::Owned(s) => visit(s),
+        }
+    }
+
+    fn with_bytes<R>(&self, consumer: &'static str, visit: impl FnOnce(&[u8]) -> R) -> R {
+        match &self.bytes {
+            Variant::BytesSlice(s) => s.with_bytes(consumer, visit),
+            Variant::Owned(s) => visit(s.as_bytes()),
         }
     }
 
@@ -84,30 +109,25 @@ impl StringSlice {
         }
     }
 
-    fn bytes(&self) -> &[u8] {
-        match &self.bytes {
-            Variant::BytesSlice(s) => s.deref(),
-            Variant::Owned(s) => s.as_bytes(),
-        }
-    }
-
     pub fn len_unicode(&self) -> usize {
-        count_unicode_chars(self.bytes())
+        self.with_bytes("string_slice.len_unicode", count_unicode_chars)
     }
 
     pub fn len_utf16(&self) -> usize {
-        count_utf16_len(self.bytes())
+        self.with_bytes("string_slice.len_utf16", count_utf16_len)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.bytes().is_empty()
+        self.len_bytes() == 0
     }
 
     pub fn extend(&mut self, s: &str) {
         match &mut self.bytes {
             Variant::BytesSlice(_) => {
                 *self = Self {
-                    bytes: Variant::Owned(format!("{}{}", self.as_str(), s)),
+                    bytes: Variant::Owned(
+                        self.with_str("string_slice.extend_owned", |text| format!("{}{}", text, s)),
+                    ),
                 }
             }
             Variant::Owned(v) => {
@@ -119,7 +139,7 @@ impl StringSlice {
 
 impl std::fmt::Display for StringSlice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
+        self.with_str("string_slice.display", |text| f.write_str(text))
     }
 }
 
@@ -138,7 +158,9 @@ impl Serialize for StringSlice {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(self.as_str())
+        self.with_str("string_slice.serialize", |text| {
+            serializer.serialize_str(text)
+        })
     }
 }
 
@@ -150,7 +172,7 @@ impl DeltaValue for StringSlice {
                 Err(_) => Err(other),
             },
             (Variant::Owned(s), _) => {
-                s.push_str(other.as_str());
+                other.with_str("string_slice.value_extend", |text| s.push_str(text));
                 Ok(())
             }
             _ => Err(other),
@@ -159,9 +181,13 @@ impl DeltaValue for StringSlice {
 
     fn take(&mut self, length: usize) -> Self {
         let length = if cfg!(feature = "wasm") {
-            utf16_to_utf8_index(self.as_str(), length).unwrap()
+            self.with_str("string_slice.index", |text| {
+                utf16_to_utf8_index(text, length).unwrap()
+            })
         } else {
-            unicode_to_utf8_index(self.as_str(), length).unwrap()
+            self.with_str("string_slice.index", |text| {
+                unicode_to_utf8_index(text, length).unwrap()
+            })
         };
 
         match &mut self.bytes {
@@ -187,9 +213,9 @@ impl DeltaValue for StringSlice {
     /// Utf16 length when in WASM
     fn length(&self) -> usize {
         if cfg!(feature = "wasm") {
-            count_utf16_len(self.bytes())
+            self.len_utf16()
         } else {
-            count_unicode_chars(self.bytes())
+            self.len_unicode()
         }
     }
 }
@@ -197,9 +223,9 @@ impl DeltaValue for StringSlice {
 impl HasLength for StringSlice {
     fn rle_len(&self) -> usize {
         if cfg!(feature = "wasm") {
-            count_utf16_len(self.bytes())
+            self.len_utf16()
         } else {
-            count_unicode_chars(self.bytes())
+            self.len_unicode()
         }
     }
 }
@@ -218,7 +244,7 @@ impl TryInsert for StringSlice {
                     } else {
                         unicode_to_utf8_index(s.as_str(), pos).unwrap()
                     };
-                    s.insert_str(pos, elem.as_str());
+                    elem.with_str("string_slice.try_insert", |text| s.insert_str(pos, text));
                     Ok(())
                 } else {
                     Err(elem)
@@ -274,12 +300,20 @@ impl Mergeable for StringSlice {
 impl Sliceable for StringSlice {
     fn _slice(&self, range: std::ops::Range<usize>) -> Self {
         let range = if cfg!(feature = "wasm") {
-            let start = utf16_to_utf8_index(self.as_str(), range.start).unwrap();
-            let end = utf16_to_utf8_index(self.as_str(), range.end).unwrap();
+            let start = self.with_str("string_slice.index", |text| {
+                utf16_to_utf8_index(text, range.start).unwrap()
+            });
+            let end = self.with_str("string_slice.index", |text| {
+                utf16_to_utf8_index(text, range.end).unwrap()
+            });
             start..end
         } else {
-            let start = unicode_to_utf8_index(self.as_str(), range.start).unwrap();
-            let end = unicode_to_utf8_index(self.as_str(), range.end).unwrap();
+            let start = self.with_str("string_slice.index", |text| {
+                unicode_to_utf8_index(text, range.start).unwrap()
+            });
+            let end = self.with_str("string_slice.index", |text| {
+                unicode_to_utf8_index(text, range.end).unwrap()
+            });
             start..end
         };
 
@@ -293,9 +327,13 @@ impl Sliceable for StringSlice {
 
     fn split(&mut self, pos: usize) -> Self {
         let pos = if cfg!(feature = "wasm") {
-            utf16_to_utf8_index(self.as_str(), pos).unwrap()
+            self.with_str("string_slice.index", |text| {
+                utf16_to_utf8_index(text, pos).unwrap()
+            })
         } else {
-            unicode_to_utf8_index(self.as_str(), pos).unwrap()
+            self.with_str("string_slice.index", |text| {
+                unicode_to_utf8_index(text, pos).unwrap()
+            })
         };
 
         let bytes = match &mut self.bytes {
@@ -355,6 +393,72 @@ mod tests {
     use crate::delta::DeltaValue;
 
     use super::*;
+
+    #[test]
+    fn logical_extent_splits_read_scoped_without_retaining_materialization() {
+        use std::{
+            io,
+            ops::Range,
+            sync::{
+                atomic::{AtomicUsize, Ordering},
+                Arc,
+            },
+        };
+        struct Resolver {
+            reads: AtomicUsize,
+            copied: AtomicUsize,
+        }
+        impl crate::text_slice::ExtentResolver for Resolver {
+            fn with_bytes(
+                &self,
+                extent: u64,
+                range: Range<usize>,
+                _consumer: &'static str,
+                visit: &mut dyn FnMut(&[u8]),
+            ) -> io::Result<()> {
+                assert_eq!(extent, 17);
+                self.reads.fetch_add(1, Ordering::SeqCst);
+                visit(&"aé😀b".as_bytes()[range]);
+                Ok(())
+            }
+            fn record_materialization(
+                &self,
+                _extent: u64,
+                _range: Range<usize>,
+                _consumer: &'static str,
+                bytes: usize,
+            ) {
+                self.copied.fetch_add(bytes, Ordering::SeqCst);
+            }
+        }
+        let resolver = Arc::new(Resolver {
+            reads: AtomicUsize::new(0),
+            copied: AtomicUsize::new(0),
+        });
+        let mut slice = StringSlice::new(BytesSlice::extent(resolver.clone(), 17, 0..8));
+        assert_eq!(slice.len_unicode(), 4);
+        assert_eq!(slice.len_utf16(), 5);
+        let middle = slice._slice(1..3);
+        assert!(middle.with_str("test.middle", |s| s == "é😀"));
+        let right = slice.split(2);
+        assert!(slice.with_str("test.left", |s| s == "aé"));
+        assert!(right.with_str("test.right", |s| s == "😀b"));
+        for value in [&slice, &middle, &right] {
+            assert!(matches!(
+                value.bytes,
+                Variant::BytesSlice(BytesSlice::Extent { .. })
+            ));
+        }
+        assert_eq!(resolver.copied.load(Ordering::SeqCst), 0);
+        assert!(resolver.reads.load(Ordering::SeqCst) > 0);
+        // An explicitly requested contiguous view is temporary and counted.
+        assert_eq!(middle.as_str(), "é😀");
+        assert_eq!(resolver.copied.load(Ordering::SeqCst), 6);
+        assert!(matches!(
+            middle.bytes,
+            Variant::BytesSlice(BytesSlice::Extent { .. })
+        ));
+    }
 
     #[test]
     fn owned_slice_lengths_and_unicode_boundaries_use_logical_char_indices() {

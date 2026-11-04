@@ -266,6 +266,9 @@ pub(crate) struct ChangesBlock {
     estimated_size: usize,
     flushed: bool,
     content: ChangesBlockContent,
+    /// Preserve parsed text symmetrically for both experimental ownership lanes.
+    /// Maintained on insertion so export adds no historical scan.
+    retain_parsed_text: bool,
     /// Where the arena reached when `content` was parsed from its bytes (`Both`). See
     /// [`ChangeStore::rollback_arena`].
     parsed_extent: ArenaExtent,
@@ -296,6 +299,7 @@ impl Clone for ChangesBlock {
             estimated_size: self.estimated_size,
             flushed: self.flushed,
             content: self.content.clone(),
+            retain_parsed_text: self.retain_parsed_text,
             parsed_extent: self.parsed_extent,
         }
     }
@@ -1998,6 +2002,7 @@ impl ChangesBlock {
             lamport_range,
             flushed: true,
             content,
+            retain_parsed_text: false,
             parsed_extent: ArenaExtent::default(),
         })
     }
@@ -2013,6 +2018,7 @@ impl ChangesBlock {
         let lamport_range = (change.lamport, change.lamport + atom_len as Lamport);
         let estimated_size = change.estimate_storage_size();
         let peer = change.id.peer;
+        let retain_parsed_text = changes_retain_parsed_text(std::slice::from_ref(&change));
         let content = ChangesBlockContent::Changes(Arc::new(vec![change]));
         Self {
             peer,
@@ -2020,6 +2026,7 @@ impl ChangesBlock {
             lamport_range,
             estimated_size,
             content,
+            retain_parsed_text,
             flushed: false,
             parsed_extent: ArenaExtent::default(),
         }
@@ -2073,6 +2080,7 @@ impl ChangesBlock {
         let next_counter = change.id.counter + atom_len as Counter;
 
         let is_full = new_change_size + self.estimated_size > MAX_BLOCK_SIZE;
+        let has_new_extent_text = changes_retain_parsed_text(std::slice::from_ref(&change));
         let this = Arc::make_mut(self);
         let changes = this.content.changes_mut(a).unwrap();
         let changes = Arc::make_mut(changes);
@@ -2100,6 +2108,7 @@ impl ChangesBlock {
             }
         }
 
+        this.retain_parsed_text |= has_new_extent_text;
         this.flushed = false;
         this.counter_range.1 = next_counter;
         this.lamport_range.1 = next_lamport;
@@ -2111,14 +2120,22 @@ impl ChangesBlock {
             ChangesBlockContent::Bytes(bytes) => bytes.clone(),
             ChangesBlockContent::Both(_, bytes) => {
                 let bytes = bytes.clone();
-                let this = Arc::make_mut(self);
-                this.content = ChangesBlockContent::Bytes(bytes.clone());
+                // C-ref must keep its logical Ops across wire export. Otherwise
+                // a later parse silently replaces extent handles with heap text.
+                if !self.retain_parsed_text {
+                    let this = Arc::make_mut(self);
+                    this.content = ChangesBlockContent::Bytes(bytes.clone());
+                }
                 bytes
             }
             ChangesBlockContent::Changes(changes) => {
                 let bytes = ChangesBlockBytes::serialize(changes, a);
-                let this = Arc::make_mut(self);
-                this.content = ChangesBlockContent::Bytes(bytes.clone());
+                if !self.retain_parsed_text {
+                    let this = Arc::make_mut(self);
+                    this.content = ChangesBlockContent::Bytes(bytes.clone());
+                }
+                // Experimental text blocks retain parsed Ops in BOTH lanes and
+                // do not add a retained wire cache. Returned wire bytes are output.
                 bytes
             }
         }
@@ -3027,5 +3044,70 @@ mod test {
 
         test_encode_decode(doc_a);
         Ok(())
+    }
+}
+
+/// Keep identical parsed-text retention in both experimental ownership lanes.
+fn changes_retain_parsed_text(changes: &[Change]) -> bool {
+    changes.iter().any(|change| {
+        change.ops.iter().any(|op| {
+            matches!(&op.content, crate::op::InnerContent::List(
+            crate::container::list::list_op::InnerListOp::InsertText { slice, .. }
+        ) if cfg!(feature = "shared_arena_experiment") || slice.is_extent())
+        })
+    })
+}
+
+#[cfg(all(test, feature = "shared_arena_experiment"))]
+mod extent_owner_retention_tests {
+    use super::*;
+    use crate::{
+        container::list::list_op::InnerListOp,
+        op::InnerContent,
+        text_slice::{ExtentResolver, TextSlice},
+    };
+    struct Resolver;
+    impl ExtentResolver for Resolver {
+        fn with_bytes(
+            &self,
+            _: u64,
+            range: std::ops::Range<usize>,
+            _: &'static str,
+            visit: &mut dyn FnMut(&[u8]),
+        ) -> std::io::Result<()> {
+            visit(&"a玉".as_bytes()[range]);
+            Ok(())
+        }
+    }
+    #[test]
+    fn native_wire_export_retains_logical_op_owners() {
+        let arena = SharedArena::new();
+        let slice = TextSlice::extent(Arc::new(Resolver), 1, 0..4);
+        let info = arena.alloc_text_slice(slice.clone()).unwrap();
+        let container = arena.register_container(&ContainerID::new_root(
+            "body",
+            loro_common::ContainerType::Text,
+        ));
+        let mut ops = RleVec::new();
+        ops.push(Op {
+            counter: 0,
+            container,
+            content: InnerContent::List(InnerListOp::InsertText {
+                slice,
+                unicode_start: info.start as u32,
+                unicode_len: 2,
+                pos: 0,
+            }),
+        });
+        let change = Change::new(ops, Frontiers::default(), ID::new(88, 0), 0, 0);
+        let mut block = Arc::new(ChangesBlock::new(change, &arena));
+        let _wire = block.to_bytes(&arena);
+        assert!(matches!(block.content, ChangesBlockContent::Changes(_)));
+        let _wire_again = block.to_bytes(&arena);
+        block.ensure_changes(&arena).unwrap();
+        let op = &block.content.try_changes().unwrap()[0].ops[0];
+        assert!(
+            matches!(&op.content,InnerContent::List(InnerListOp::InsertText {slice,..}) if slice.is_extent())
+        );
     }
 }

@@ -581,6 +581,21 @@ impl InnerStore {
         out.into_iter().collect()
     }
 
+    /// Visit only wrappers already resident in this store. Returns true when
+    /// additional on-disk wrappers may exist; obtaining their count would scan.
+    /// Does not load, decode, detach CoW ownership, or warm decoded-value caches.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(crate) fn visit_loaded_container_states(
+        &self,
+        mut visit: impl FnMut(ContainerIdx, Option<&crate::state::State>),
+    ) -> bool {
+        for (slot, entry) in Self::ordered_entries(&self.store) {
+            let idx = ContainerIdx::from_index_and_type(slot as u32, entry.wrapper.kind());
+            visit(idx, entry.wrapper.try_get_state());
+        }
+        self.load_state != LoadState::AllLoaded || self.evicted_since_full_load
+    }
+
     pub(crate) fn iter_all_containers_mut(
         &mut self,
     ) -> impl Iterator<Item = (ContainerIdx, &mut ContainerWrapper)> {
@@ -1069,6 +1084,54 @@ mod tests {
         let kv = KvWrapper::new_mem();
         kv.set_all(vec![(Bytes::from(cid.to_bytes()), value)]);
         kv.export()
+    }
+
+    #[cfg(feature = "shared_arena_experiment")]
+    #[test]
+    fn resident_metadata_visitor_does_not_scan_decode_or_detach() {
+        let arena = SharedArena::new();
+        let config = Configure::default();
+        let mut source = InnerStore::new(arena.clone(), config.clone());
+        let (child_id, value) = mergeable_child_entry();
+        source.load_state = LoadState::Lazy;
+        source
+            .kv
+            .set_all(vec![(Bytes::from(child_id.to_bytes()), value)]);
+        let mut visits = 0;
+        assert!(source.visit_loaded_container_states(|_, _| visits += 1));
+        assert_eq!(visits, 0);
+        assert!(source.store.is_empty());
+        assert_eq!(source.load_state, LoadState::Lazy);
+        assert!(
+            arena.id_to_idx(&child_id).is_none(),
+            "visitor registered unseen disk entry"
+        );
+
+        // Materialize only wrappers explicitly for the second fixture, then
+        // fork. The diagnostic must neither decode their state nor detach them.
+        source.load_all();
+        let child = source.fork_cow(arena.fork_cow(), &config.fork(), false);
+        let before: Vec<_> = InnerStore::ordered_entries(&child.store)
+            .into_iter()
+            .map(|(slot, entry)| (slot, Arc::as_ptr(&entry.wrapper), Arc::as_ptr(&entry.owner)))
+            .collect();
+        let queue_len = child.value_cache_queue.len();
+        let mut undecoded = 0;
+        assert!(!child.visit_loaded_container_states(|_, state| {
+            assert!(state.is_none(), "diagnostic decoded a lazy wrapper");
+            undecoded += 1;
+        }));
+        assert_eq!(undecoded, 1);
+        assert_eq!(child.value_cache_queue.len(), queue_len);
+        let after: Vec<_> = InnerStore::ordered_entries(&child.store)
+            .into_iter()
+            .map(|(slot, entry)| (slot, Arc::as_ptr(&entry.wrapper), Arc::as_ptr(&entry.owner)))
+            .collect();
+        assert_eq!(before, after, "diagnostic detached CoW ownership");
+        assert!(!Arc::ptr_eq(
+            &child.owner,
+            &InnerStore::ordered_entries(&child.store)[0].1.owner
+        ));
     }
 
     #[test]
