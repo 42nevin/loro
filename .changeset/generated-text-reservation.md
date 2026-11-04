@@ -7,3 +7,7 @@ The default insertion API and Update format are unchanged. This qualification
 hook adopts native immutable slices and explicitly requires backends to account
 for any reservation-to-native ownership copy; it does not claim zero-copy
 storage-owned live operations. See `context/shared-arena-experiment.md`.
+
+Pass actual native identity, positions, Lamport clock and dependencies to an
+optional allocator validation callback before reservation generation or writes.
+Commit timestamp/message remain commit-time metadata, not allocation promises.

@@ -681,9 +681,26 @@ impl Transaction {
         generate: &mut dyn FnMut(&mut [u8]),
         doc: &LoroDoc,
     ) -> LoroResult<()> {
+        // Use exactly the same identity/dependency source as apply_local_op.
+        // Storage must see these operands before it can commit its reservation.
+        let context = crate::arena::TextAllocationContext {
+            id: ID::new(self.peer, self.next_counter),
+            container: self
+                .arena
+                .idx_to_id(container)
+                .expect("registered text container"),
+            unicode_pos: pos,
+            entity_pos: pos,
+            lamport: self.next_lamport,
+            deps: if self.local_ops.is_empty() {
+                self.frontiers.clone()
+            } else {
+                Frontiers::from_id(ID::new(self.peer, self.next_counter - 1))
+            },
+        };
         let (slice, info) = self
             .arena
-            .alloc_generated_text(byte_len, allocator, generate)
+            .alloc_generated_text(&context, byte_len, allocator, generate)
             .map_err(|e| LoroError::Unknown(e.to_string().into_boxed_str()))?;
         let unicode_len = info.end - info.start;
         if unicode_len == 0 {

@@ -2422,7 +2422,7 @@ impl ContainerTrait for LoroText {
 }
 
 #[cfg(feature = "shared_arena_experiment")]
-pub use loro_internal::arena::TextExtentAllocator;
+pub use loro_internal::arena::{TextAllocationContext, TextExtentAllocator};
 
 impl LoroText {
     /// Experimental storage reservation insertion using Unicode positions.

@@ -1,10 +1,31 @@
 mod str_arena;
+/// Native identity and causal operands known before a generated text allocation.
+/// Positions are both provided explicitly; the experimental style-free route
+/// requires them to agree. Commit timestamp/message are deliberately absent:
+/// they may be changed by commit options after allocation.
+#[cfg(feature = "shared_arena_experiment")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextAllocationContext {
+    pub id: ID,
+    pub container: ContainerID,
+    pub unicode_pos: usize,
+    pub entity_pos: usize,
+    pub lamport: Lamport,
+    pub deps: crate::version::Frontiers,
+}
+
 /// Experimental storage reservation hook. The callback must be invoked exactly
 /// once on a buffer of `byte_len` bytes. Return an independently owned immutable
 /// slice: a borrowed database page may not escape its transaction. Backends that
 /// must copy into BytesSlice must account for that copy, not call it zero-copy.
 #[cfg(feature = "shared_arena_experiment")]
 pub trait TextExtentAllocator {
+    /// Validate or capture actual native operands before any reservation writes.
+    /// Returning an error prevents `allocate` and the generator from running.
+    fn begin_allocation(&mut self, _context: &TextAllocationContext) -> std::io::Result<()> {
+        Ok(())
+    }
+
     fn allocate(
         &mut self,
         byte_len: usize,
@@ -513,6 +534,7 @@ impl SharedArena {
     #[cfg(feature = "shared_arena_experiment")]
     pub(crate) fn alloc_generated_text(
         &self,
+        context: &TextAllocationContext,
         byte_len: usize,
         allocator: &mut dyn TextExtentAllocator,
         generate: &mut dyn FnMut(&mut [u8]),
@@ -527,6 +549,7 @@ impl SharedArena {
         // Do not unwind through the auto-transaction lock: a generator is caller
         // code and its failure must not poison otherwise unchanged document state.
         let slice = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            allocator.begin_allocation(context)?;
             allocator.allocate(byte_len, &mut checked)
         }))
         .map_err(|_| std::io::Error::other("text allocator or generator panicked"))??;

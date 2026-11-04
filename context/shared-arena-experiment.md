@@ -71,3 +71,36 @@ and generator panic return errors before arena mutation; the latter is caught
 inside the allocation hook to avoid poisoning the auto-transaction lock.
 A cleared-style-history test rejects insertion before generation if hidden
 anchors remain. Threaded CoW branches exercise independent owner lifetimes.
+
+## Allocation-time native operands
+
+The additive `TextExtentAllocator::begin_allocation(&TextAllocationContext)`
+callback receives the transaction's actual next atom ID, container ID, Unicode
+and entity positions, Lamport clock, and causal dependencies before `allocate`
+or generation runs. The first local operation uses the transaction's initial
+frontier, which may have multiple concurrent heads. Later operations use the
+immediate preceding local atom. These are the same fields used by the normal
+transaction apply/version pipeline, not predictions made by a storage caller.
+The hook runs inside the same panic boundary; rejection leaves the generator,
+reservation allocation, arena, and local atom count untouched.
+
+Storage implementations can validate their proposed records or construct them
+from this context before committing payload+metadata. This is still not a
+cross-database atomic transaction with Loro publication: a crash after storage
+commit but before Loro apply requires the experiment's existing recovery rules.
+
+Commit timestamp and message are deliberately not supplied as final values.
+Commit options (and pre-commit behavior) can change them after allocation. This
+qualification uses timestamp 0 and message None explicitly; other metadata
+policies require finalization at commit rather than assuming allocation-time
+values are final. The API makes no timestamp promise.
+
+The allocation-context regression rejects deliberately wrong IDs and dependency
+frontiers before allocation/generation, then verifies a real two-head concurrent
+frontier, a nonempty same-peer history, and predecessor dependencies for the next
+local run in the same transaction.
+
+The later published-stage recheck also completed online all-features compilation
+successfully after fetching the missing registry dependency; this supersedes the
+initial offline cache-miss limitation above. Focused clippy completed with existing
+style warnings and no errors.

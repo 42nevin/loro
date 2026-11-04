@@ -221,3 +221,111 @@ fn cleared_style_history_is_rejected_before_generation_if_anchors_remain() {
     assert_eq!(doc.oplog_vv(), before);
     assert_eq!(text.to_string(), "abc");
 }
+
+#[test]
+fn allocation_context_is_actual_and_rejection_precedes_generation() {
+    use loro::{ContainerTrait, Frontiers, TextAllocationContext, ID};
+    #[derive(Default)]
+    struct CheckedAllocator {
+        expected: Option<TextAllocationContext>,
+        seen: Vec<TextAllocationContext>,
+        allocated: usize,
+    }
+    impl TextExtentAllocator for CheckedAllocator {
+        fn begin_allocation(&mut self, context: &TextAllocationContext) -> std::io::Result<()> {
+            if self
+                .expected
+                .as_ref()
+                .is_some_and(|expected| expected != context)
+            {
+                return Err(std::io::Error::other("native allocation operands differ"));
+            }
+            self.seen.push(context.clone());
+            Ok(())
+        }
+        fn allocate(
+            &mut self,
+            len: usize,
+            generate: &mut dyn FnMut(&mut [u8]),
+        ) -> std::io::Result<BytesSlice> {
+            self.allocated += 1;
+            let mut bytes = vec![0; len];
+            generate(&mut bytes);
+            Ok(BytesSlice::from_bytes(&bytes))
+        }
+    }
+    let doc = LoroDoc::new();
+    doc.set_peer_id(10).unwrap();
+    doc.get_text("text").insert(0, "a").unwrap();
+    doc.commit();
+    let left = doc.fork_cow().unwrap();
+    left.set_peer_id(11).unwrap();
+    left.get_text("text").insert(1, "b").unwrap();
+    left.commit();
+    let right = doc.fork_cow().unwrap();
+    right.set_peer_id(12).unwrap();
+    right.get_text("text").insert(1, "c").unwrap();
+    right.commit();
+    doc.import(&left.export(ExportMode::all_updates()).unwrap())
+        .unwrap();
+    doc.import(&right.export(ExportMode::all_updates()).unwrap())
+        .unwrap();
+    let deps = doc.oplog_frontiers();
+    assert_eq!(deps.len(), 2);
+    let vv = doc.oplog_vv();
+    let expected = TextAllocationContext {
+        id: ID::new(10, 1),
+        container: doc.get_text("text").id(),
+        unicode_pos: 1,
+        entity_pos: 1,
+        lamport: 2,
+        deps: deps.clone(),
+    };
+    for wrong_deps in [false, true] {
+        let mut wrong = expected.clone();
+        if wrong_deps {
+            wrong.deps = Frontiers::default();
+        } else {
+            wrong.id.counter = 99;
+        }
+        let mut allocator = CheckedAllocator {
+            expected: Some(wrong),
+            ..Default::default()
+        };
+        assert!(doc
+            .get_text("text")
+            .insert_generated_unicode(1, 1, &mut allocator, |_| {
+                panic!("rejected metadata must not generate payload")
+            })
+            .is_err());
+        assert_eq!(allocator.allocated, 0);
+        assert!(allocator.seen.is_empty());
+        assert_eq!(doc.oplog_vv(), vv);
+    }
+    let mut allocator = CheckedAllocator {
+        expected: Some(expected.clone()),
+        ..Default::default()
+    };
+    doc.get_text("text")
+        .insert_generated_unicode(1, 1, &mut allocator, |b| b[0] = b'x')
+        .unwrap();
+    assert_eq!(allocator.seen, vec![expected]);
+    allocator.expected = Some(TextAllocationContext {
+        id: ID::new(10, 2),
+        container: doc.get_text("text").id(),
+        unicode_pos: 2,
+        entity_pos: 2,
+        lamport: 3,
+        deps: Frontiers::from_id(ID::new(10, 1)),
+    });
+    doc.get_text("text")
+        .insert_generated_unicode(2, 1, &mut allocator, |b| b[0] = b'y')
+        .unwrap();
+    assert_eq!(allocator.allocated, 2);
+    doc.commit();
+    let decoded = doc.export_json_updates(&vv, &doc.oplog_vv());
+    assert_eq!(decoded.changes.len(), 1);
+    assert_eq!(decoded.changes[0].lamport, 2);
+    assert_eq!(decoded.changes[0].ops[0].counter, 1);
+    assert_eq!(decoded.changes[0].op_len(), 2);
+}
