@@ -26,6 +26,7 @@ tracing = { workspace = true }
 rustc-hash = { workspace = true }
 
 [dev-dependencies]
+append-only-bytes = "0.1.12"
 serde_json = { version = "1.0.87", features = ["float_roundtrip"] }
 anyhow = "1.0.83"
 ctor = "0.2"
@@ -42,6 +43,7 @@ name = "native_cow_history_work"
 required-features = ["test_utils"]
 
 [features]
+shared_arena_experiment = ["loro-internal/shared_arena_experiment"]
 test_utils = ["loro-internal/test_utils"]
 default = ["counter"]
 counter = ["loro-internal/counter"]

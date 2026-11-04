@@ -34,14 +34,22 @@ impl Clone for Index {
     fn clone(&self) -> Self {
         #[cfg(any(test, feature = "test_utils"))]
         crate::cow_work::index_clone();
-        Self { bytes: self.bytes, utf16: self.utf16, unicode: self.unicode }
+        Self {
+            bytes: self.bytes,
+            utf16: self.utf16,
+            unicode: self.unicode,
+        }
     }
 }
 impl Index {
     fn scalar_copy(&self) -> Self {
         #[cfg(any(test, feature = "test_utils"))]
         crate::cow_work::scalar_index_clone();
-        Self { bytes: self.bytes, utf16: self.utf16, unicode: self.unicode }
+        Self {
+            bytes: self.bytes,
+            utf16: self.utf16,
+            unicode: self.unicode,
+        }
     }
 }
 
@@ -68,7 +76,8 @@ impl StrArena {
         if !self.bytes.is_empty() {
             let bytes = std::mem::take(&mut self.bytes);
             let length = bytes.len();
-            self.sealed.push_back(Segment(self.sealed_len, bytes.slice(..)));
+            self.sealed
+                .push_back(Segment(self.sealed_len, bytes.slice(..)));
             self.sealed_len += length;
         }
         Self {
@@ -124,6 +133,37 @@ impl StrArena {
         if last_save_index != input.len() {
             self._alloc(&input[last_save_index..], utf16, unicode_len);
         }
+    }
+
+    /// Adopt an immutable native owner without another payload copy. The storage
+    /// allocator may already have copied out of a bounded database write guard.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(crate) fn alloc_sealed(&mut self, slice: BytesSlice) {
+        if slice.is_empty() {
+            return;
+        }
+        if !self.bytes.is_empty() {
+            let bytes = std::mem::take(&mut self.bytes);
+            let length = bytes.len();
+            self.sealed
+                .push_back(Segment(self.sealed_len, bytes.slice(..)));
+            self.sealed_len += length;
+        }
+        let input = std::str::from_utf8(&slice).expect("validated generated UTF-8");
+        if self.unicode_indexes.is_empty() {
+            self.unicode_indexes.push_back(Index::default());
+        }
+        for c in input.chars() {
+            self.len.bytes += c.len_utf8() as u32;
+            self.len.utf16 += c.len_utf16() as u32;
+            self.len.unicode += 1;
+            if self.len.bytes - self.unicode_indexes.back().unwrap().bytes > INDEX_INTERVAL {
+                self.unicode_indexes.push_back(self.len.scalar_copy());
+            }
+        }
+        self.sealed_len += slice.len();
+        self.sealed
+            .push_back(Segment(self.sealed_len - slice.len(), slice));
     }
 
     fn _alloc(&mut self, input: &str, utf16: u32, unicode_len: i32) {
@@ -314,8 +354,11 @@ impl StrArena {
                 self.bytes = bytes;
             }
         }
-        self.unicode_indexes
-            .truncate(checkpoint.unicode_indexes_len.min(self.unicode_indexes.len()));
+        self.unicode_indexes.truncate(
+            checkpoint
+                .unicode_indexes_len
+                .min(self.unicode_indexes.len()),
+        );
         self.len = checkpoint.len;
     }
 }
@@ -326,52 +369,82 @@ mod test {
 
     use super::*;
 
+    #[cfg(feature = "shared_arena_experiment")]
+    #[test]
+    fn generated_sealed_owner_rollback_keeps_other_branch() {
+        let mut arena = StrArena::default();
+        let first = BytesSlice::from_bytes("a界".as_bytes());
+        arena.alloc_sealed(first.clone());
+        assert!(arena.slice_bytes(..).ptr_eq(&first));
+        let checkpoint = arena.checkpoint();
+        arena.alloc_sealed(BytesSlice::from_bytes("🙂玉".as_bytes()));
+        assert!(
+            arena.slice_bytes(..first.len()).ptr_eq(&first),
+            "old prefix was copied"
+        );
+        let mut branch = arena.fork_cow();
+        arena.rollback(checkpoint);
+        arena.alloc_sealed(BytesSlice::from_bytes("Z".as_bytes()));
+        assert_eq!(arena.slice_str_by_unicode(..), "a界Z");
+        assert_eq!(branch.slice_str_by_unicode(..), "a界🙂玉");
+        assert_eq!(arena.len_utf16(), 3);
+        assert_eq!(branch.len_utf16(), 5);
+    }
+
     #[test]
     fn many_sealed_segments_seek_and_rollback_preserve_other_owners() {
         for total in [129, 1025] {
-        let prefix = total - 2;
-        let mut arena = StrArena::default();
-        let segment = "界🙂a".repeat(64);
-        let width = segment.chars().count();
-        for _ in 0..prefix {
-            arena.alloc(&segment);
-            drop(arena.fork_cow());
-        }
-        assert!(arena.unicode_indexes.len() > 64);
-        let checkpoint = arena.checkpoint();
-        let mut older = arena.fork_cow();
-        for _ in 0..2 {
-            arena.alloc(&segment);
-            drop(arena.fork_cow());
-        }
-        crate::cow_work::reset();
-        let mut full = arena.fork_cow();
-        let fork_work = crate::cow_work::take();
-        crate::cow_work::reset();
-        let last = arena.slice_str_by_unicode((total - 1) * width..total * width).into_owned();
-        let seek = crate::cow_work::take();
-        assert_eq!(last, segment);
-        crate::cow_work::reset();
-        arena.rollback(checkpoint);
-        let rollback = crate::cow_work::take();
-        arena.alloc("!");
-        assert_eq!(arena.slice_str_by_unicode(prefix * width..), "!");
-        assert_eq!(older.len_unicode(), prefix * width);
-        assert_eq!(older.slice_str_by_unicode((prefix - 1) * width..), segment);
-        assert_eq!(full.len_unicode(), total * width);
-        assert_eq!(full.slice_str_by_unicode((total - 1) * width..), segment);
-        eprintln!("SEGMENT_WORK segments={total} seek_visits={} rollback_visits={} fork_index_clones={} fork_segment_clones={} rollback_index_clones={} rollback_segment_clones={}",
+            let prefix = total - 2;
+            let mut arena = StrArena::default();
+            let segment = "界🙂a".repeat(64);
+            let width = segment.chars().count();
+            for _ in 0..prefix {
+                arena.alloc(&segment);
+                drop(arena.fork_cow());
+            }
+            assert!(arena.unicode_indexes.len() > 64);
+            let checkpoint = arena.checkpoint();
+            let mut older = arena.fork_cow();
+            for _ in 0..2 {
+                arena.alloc(&segment);
+                drop(arena.fork_cow());
+            }
+            crate::cow_work::reset();
+            let mut full = arena.fork_cow();
+            let fork_work = crate::cow_work::take();
+            crate::cow_work::reset();
+            let last = arena
+                .slice_str_by_unicode((total - 1) * width..total * width)
+                .into_owned();
+            let seek = crate::cow_work::take();
+            assert_eq!(last, segment);
+            crate::cow_work::reset();
+            arena.rollback(checkpoint);
+            let rollback = crate::cow_work::take();
+            arena.alloc("!");
+            assert_eq!(arena.slice_str_by_unicode(prefix * width..), "!");
+            assert_eq!(older.len_unicode(), prefix * width);
+            assert_eq!(older.slice_str_by_unicode((prefix - 1) * width..), segment);
+            assert_eq!(full.len_unicode(), total * width);
+            assert_eq!(full.slice_str_by_unicode((total - 1) * width..), segment);
+            eprintln!("SEGMENT_WORK segments={total} seek_visits={} rollback_visits={} fork_index_clones={} fork_segment_clones={} rollback_index_clones={} rollback_segment_clones={}",
             seek.string_segment_visits, rollback.string_segment_visits,
             fork_work.string_index_entries_cloned, fork_work.string_segment_entries_cloned,
             rollback.string_index_entries_cloned, rollback.string_segment_entries_cloned);
-        // Even 1025 segments need at most eleven search probes; allow extra
-        // bounded indexing/boundary checks, but never a whole-prefix scan.
-        assert!(seek.string_segment_visits <= 32, "seek scanned retained prefix");
-        assert!(rollback.string_segment_visits <= 32, "rollback scanned retained prefix");
-        assert!(fork_work.string_index_entries_cloned <= 128);
-        assert!(fork_work.string_segment_entries_cloned <= 128);
-        assert!(rollback.string_index_entries_cloned <= 512);
-        assert!(rollback.string_segment_entries_cloned <= 512);
+            // Even 1025 segments need at most eleven search probes; allow extra
+            // bounded indexing/boundary checks, but never a whole-prefix scan.
+            assert!(
+                seek.string_segment_visits <= 32,
+                "seek scanned retained prefix"
+            );
+            assert!(
+                rollback.string_segment_visits <= 32,
+                "rollback scanned retained prefix"
+            );
+            assert!(fork_work.string_index_entries_cloned <= 128);
+            assert!(fork_work.string_segment_entries_cloned <= 128);
+            assert!(rollback.string_index_entries_cloned <= 512);
+            assert!(rollback.string_segment_entries_cloned <= 512);
         }
     }
 

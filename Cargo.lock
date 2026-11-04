@@ -1590,6 +1590,7 @@ name = "loro"
 version = "1.16.2"
 dependencies = [
  "anyhow",
+ "append-only-bytes",
  "base64",
  "ctor 0.2.9",
  "dev-utils",

@@ -1,4 +1,17 @@
 mod str_arena;
+/// Experimental storage reservation hook. The callback must be invoked exactly
+/// once on a buffer of `byte_len` bytes. Return an independently owned immutable
+/// slice: a borrowed database page may not escape its transaction. Backends that
+/// must copy into BytesSlice must account for that copy, not call it zero-copy.
+#[cfg(feature = "shared_arena_experiment")]
+pub trait TextExtentAllocator {
+    fn allocate(
+        &mut self,
+        byte_len: usize,
+        generate: &mut dyn FnMut(&mut [u8]),
+    ) -> std::io::Result<append_only_bytes::BytesSlice>;
+}
+
 use self::str_arena::{StrArena, StrArenaCheckpoint};
 use crate::sync::{Mutex, MutexGuard, RwLock, RwLockWriteGuard};
 use crate::{
@@ -494,6 +507,47 @@ impl SharedArena {
     pub fn alloc_str_with_slice(&self, str: &str) -> (BytesSlice, StrAllocResult) {
         let mut text_lock = self.inner.str.lock();
         _alloc_str_with_slice(&mut text_lock, str)
+    }
+
+    /// Invoke generation at the allocation site and adopt the resulting owner.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(crate) fn alloc_generated_text(
+        &self,
+        byte_len: usize,
+        allocator: &mut dyn TextExtentAllocator,
+        generate: &mut dyn FnMut(&mut [u8]),
+    ) -> std::io::Result<(BytesSlice, StrAllocResult)> {
+        let mut calls = 0;
+        let mut checked = |buffer: &mut [u8]| {
+            assert_eq!(buffer.len(), byte_len, "reservation size mismatch");
+            calls += 1;
+            assert_eq!(calls, 1, "generator must execute exactly once");
+            generate(buffer);
+        };
+        // Do not unwind through the auto-transaction lock: a generator is caller
+        // code and its failure must not poison otherwise unchanged document state.
+        let slice = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            allocator.allocate(byte_len, &mut checked)
+        }))
+        .map_err(|_| std::io::Error::other("text allocator or generator panicked"))??;
+        if calls != 1 || slice.len() != byte_len {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid generated reservation",
+            ));
+        }
+        std::str::from_utf8(&slice)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let mut arena = self.inner.str.lock();
+        let start = arena.len_unicode();
+        arena.alloc_sealed(slice.clone());
+        Ok((
+            slice,
+            StrAllocResult {
+                start,
+                end: arena.len_unicode(),
+            },
+        ))
     }
 
     /// alloc str without extra info

@@ -142,3 +142,5 @@ linked issues or traces when relevant.
   [context/wasm-container-tree.md](context/wasm-container-tree.md).
 - Native candidate metadata ownership, sparse slots, and remaining branch-copy costs:
   [context/native-cow-string-metadata.md](context/native-cow-string-metadata.md).
+
+- Generated reservation allocation and explicit live-Op ownership fallback: [context/shared-arena-experiment.md](context/shared-arena-experiment.md).

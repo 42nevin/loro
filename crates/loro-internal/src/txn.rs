@@ -671,6 +671,55 @@ impl Transaction {
         options
     }
 
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(super) fn insert_generated_text(
+        &mut self,
+        container: ContainerIdx,
+        pos: usize,
+        byte_len: usize,
+        allocator: &mut dyn crate::arena::TextExtentAllocator,
+        generate: &mut dyn FnMut(&mut [u8]),
+        doc: &LoroDoc,
+    ) -> LoroResult<()> {
+        let (slice, info) = self
+            .arena
+            .alloc_generated_text(byte_len, allocator, generate)
+            .map_err(|e| LoroError::Unknown(e.to_string().into_boxed_str()))?;
+        let unicode_len = info.end - info.start;
+        if unicode_len == 0 {
+            return Ok(());
+        }
+        let content = RawOpContent::List(crate::container::list::list_op::ListOp::Insert {
+            slice: crate::op::ListSlice::RawStr {
+                str: Cow::Borrowed(std::str::from_utf8(&slice).unwrap()),
+                unicode_len,
+            },
+            pos,
+        });
+        let retained = slice.clone();
+        self.apply_local_op_converted(
+            container,
+            content,
+            EventHint::InsertText {
+                pos: pos as u32,
+                styles: StyleMeta::default(),
+                unicode_len: unicode_len as u32,
+                event_len: unicode_len as u32,
+            },
+            doc,
+            move |_, raw| Op {
+                counter: raw.id.counter,
+                container,
+                content: InnerContent::List(InnerListOp::InsertText {
+                    slice: retained,
+                    unicode_start: info.start as u32,
+                    unicode_len: unicode_len as u32,
+                    pos: pos as u32,
+                }),
+            },
+        )
+    }
+
     pub(super) fn apply_local_op(
         &mut self,
         container: ContainerIdx,
@@ -678,6 +727,19 @@ impl Transaction {
         event: EventHint,
         // check whether context and txn are referring to the same state context
         doc: &LoroDoc,
+    ) -> LoroResult<()> {
+        self.apply_local_op_converted(container, content, event, doc, |arena, raw| {
+            arena.convert_raw_op(raw)
+        })
+    }
+
+    fn apply_local_op_converted(
+        &mut self,
+        container: ContainerIdx,
+        content: RawOpContent,
+        event: EventHint,
+        doc: &LoroDoc,
+        convert: impl FnOnce(&SharedArena, &RawOp) -> Op,
     ) -> LoroResult<()> {
         // A transaction must be applied to the document it was created for.
         // `insert_with_txn`/`delete_with_txn` are public API, so this guards
@@ -731,7 +793,7 @@ impl Transaction {
             });
         }
 
-        let op = self.arena.convert_raw_op(&raw_op);
+        let op = convert(&self.arena, &raw_op);
         state.apply_local_op(&raw_op, &op)?;
         {
             if !self.is_peer_first_appearance && !oplog.dag.latest_vv_contains_peer(self.peer) {

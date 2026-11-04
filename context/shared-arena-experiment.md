@@ -1,0 +1,73 @@
+# Generated text allocation experiment
+
+Verified against code 2026-11-04.
+
+The opt-in `shared_arena_experiment` feature adds
+`TextHandler::insert_generated_unicode` / `LoroText::insert_generated_unicode`
+and `arena::TextExtentAllocator`. Default string insertion is unchanged.
+
+## Byte path and lifetime
+
+`TextHandler` validates a Unicode position in attached, style-free text, then
+`Transaction::insert_generated_text` invokes `SharedArena::alloc_generated_text`.
+The latter invokes the allocator and generator at the actual allocation site.
+The generator receives exactly the reservation's mutable slice; no generated
+`String` or `Vec` is passed into Loro. A backend can use a transaction-owned value
+reservation for this callback. Each insertion is one extent and may stop at its
+boundary; the caller must split on UTF-8 scalar boundaries.
+
+The allocator must return an owned `append_only_bytes::BytesSlice`. In the pinned
+append-only-bytes 0.1.12 implementation this owns `Arc<RawBytes>`, not an arbitrary
+external page owner. `BytesSlice::from_bytes(reservation)` is therefore an explicit
+payload copy and must be counted as such. This hook does **not** establish
+storage-owned zero-copy live Ops. It lets a backend exercise direct reservation
+generation and quantify the required ownership fallback without unsafe lifetime
+extensions. Database transactions/guards can be dropped before the hook returns.
+
+`StrArena::alloc_sealed` adopts that owner into its immutable segment tree with
+no second payload copy. Index construction scans UTF-8 scalars. The returned
+`InnerListOp::InsertText.slice` and live rich-text state retain native BytesSlice
+owners. After the DB guard expires, live Ops read native RawBytes, not the DB page.
+`apply_local_op_converted` uses the same state, dependency, counter, event-hint,
+and RLE pipeline as ordinary insertion. Different owners prevent physical RLE
+merges; logical scalar IDs remain `(peer, counter + scalar_offset)`.
+
+## Remaining copies and limitations
+
+- The backend's reservation-to-BytesSlice fallback is a payload-sized copy.
+- Native Update/snapshot encoding materializes wire bytes; native decoding
+  reconstructs owned payloads. This API does not remove those copies.
+- A requested arena slice spanning sealed segments joins just that range into
+  AppendOnlyBytes; string-returning APIs can additionally materialize a String.
+- Ordinary mutable-tail rollback copies the retained tail. Sealed generated
+  segments are trimmed through immutable references instead.
+- Empty, invalid UTF-8, and allocator errors publish no text atom. External DB
+  writes are the allocator's responsibility and are not rolled back by Loro.
+- This experimental insertion rejects styled/detached text and is native-only.
+  It does not modify stable native Update encoding or existing receipt formats.
+
+`crates/loro/tests/shared_arena_experiment.rs` covers generation followed by
+reservation destruction, G1 `a`, reopen, G2 `玉`, historical G1 checkout, one new
+peer atom on native Update sync, tiny scalar extents, mixed UTF-8, middle edits,
+CoW branch abandonment, concurrent causal histories, and invalid UTF-8 recovery.
+The StrArena unit test covers rollback across generated sealed segments while
+another branch retains the full history.
+
+## Qualification commands
+
+With Rust 1.97.1 and cached dependencies:
+
+- `cargo test --offline -p loro --features shared_arena_experiment --test shared_arena_experiment`: 5 passed.
+- `cargo test --offline -p loro-internal --lib --features shared_arena_experiment generated_sealed_owner_rollback`: 1 passed.
+- `cargo test --offline -p loro --test native_cow_fork`: 4 passed with default features.
+- `cargo check --offline -p loro-internal --all-features`: blocked before compilation by uncached `bumpalo 3.19.0`. Native focused builds passed; all-features compilation remains unverified.
+
+Additional checks compare six extent-backed RLE runs with one ordinary packed
+run after expanding both to identical scalar `(counter, position, character)`
+records. The G2 check inspects decoded counter 1, position 1, operand `玉`, and
+one atom, not just version-vector advancement. Sealed-prefix pointer identity
+checks establish zero old-prefix payload copies at adoption. Allocation failure
+and generator panic return errors before arena mutation; the latter is caught
+inside the allocation hook to avoid poisoning the auto-transaction lock.
+A cleared-style-history test rejects insertion before generation if hidden
+anchors remain. Threaded CoW branches exercise independent owner lifetimes.

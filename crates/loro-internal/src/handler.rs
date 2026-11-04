@@ -5,8 +5,7 @@ use crate::{
         idx::ContainerIdx,
         list::list_op::{DeleteSpan, DeleteSpanWithId, ListOp},
         richtext::{
-            richtext_state::PosType, RichtextState, StyleKey, StyleOp, TextIdRun,
-            TextStyleInfoFlag,
+            richtext_state::PosType, RichtextState, StyleKey, StyleOp, TextIdRun, TextStyleInfoFlag,
         },
     },
     cursor::{Cursor, Side},
@@ -2011,6 +2010,52 @@ impl TextHandler {
         Ok(())
     }
 
+    /// Experimental Unicode insertion generated inside the allocator's reservation.
+    /// Restricted to attached, style-free native text. Extent boundaries become
+    /// legal Op/RLE boundaries, not new peer IDs or synthetic history.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub fn insert_generated_unicode(
+        &self,
+        pos: usize,
+        byte_len: usize,
+        allocator: &mut dyn crate::arena::TextExtentAllocator,
+        mut generate: impl FnMut(&mut [u8]),
+    ) -> LoroResult<()> {
+        if cfg!(feature = "wasm") {
+            return Err(LoroError::Unknown(
+                "generated insertion is native-only".into(),
+            ));
+        }
+        let inner = self.inner.try_attached_state()?;
+        inner.with_txn(|txn| {
+            inner.with_state(|state| {
+                let rt = state.as_richtext_state_mut().unwrap();
+                if rt.has_styles() || rt.len_entity() != rt.len_unicode() {
+                    return Err(LoroError::Unknown(
+                        "generated insertion requires style-free text".into(),
+                    ));
+                }
+                let len = rt.len_unicode();
+                if pos > len {
+                    return Err(LoroError::OutOfBound {
+                        pos,
+                        len,
+                        info: "generated insertion".into(),
+                    });
+                }
+                Ok(())
+            })?;
+            txn.insert_generated_text(
+                inner.container_idx,
+                pos,
+                byte_len,
+                allocator,
+                &mut generate,
+                &inner.doc,
+            )
+        })
+    }
+
     /// Insert text at `pos` using the given `pos_type` coordinate system.
     ///
     /// This method requires auto_commit to be enabled.
@@ -2916,9 +2961,9 @@ impl TextHandler {
     pub fn get_text_id_runs(&self) -> Option<Vec<TextIdRun>> {
         match &self.inner {
             MaybeDetached::Detached(_) => None,
-            MaybeDetached::Attached(a) => Some(
-                a.with_state(|state| state.as_richtext_state().unwrap().get_text_id_runs()),
-            ),
+            MaybeDetached::Attached(a) => {
+                Some(a.with_state(|state| state.as_richtext_state().unwrap().get_text_id_runs()))
+            }
         }
     }
 

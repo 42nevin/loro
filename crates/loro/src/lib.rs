@@ -2421,7 +2421,23 @@ impl ContainerTrait for LoroText {
     }
 }
 
+#[cfg(feature = "shared_arena_experiment")]
+pub use loro_internal::arena::TextExtentAllocator;
+
 impl LoroText {
+    /// Experimental storage reservation insertion using Unicode positions.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub fn insert_generated_unicode(
+        &self,
+        pos: usize,
+        byte_len: usize,
+        allocator: &mut dyn TextExtentAllocator,
+        generate: impl FnMut(&mut [u8]),
+    ) -> LoroResult<()> {
+        self.handler
+            .insert_generated_unicode(pos, byte_len, allocator, generate)
+    }
+
     /// Create a new container that is detached from the document.
     ///
     /// The edits on a detached container will not be persisted.
