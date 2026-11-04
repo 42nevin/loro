@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/loro",
+    "crates/append-only-bytes",
     "crates/examples",
     "crates/bench-utils",
     "crates/rle",
@@ -21,6 +22,7 @@ resolver = "2"
 # Use the in-tree fork of generic-btree (loro-dev maintains it). This redirects
 # every `generic-btree` dependency in the graph to the workspace crate.
 [patch.crates-io]
+append-only-bytes = { path = "crates/append-only-bytes" }
 generic-btree = { path = "crates/generic-btree" }
 loro-thunderdome = { path = "crates/loro-thunderdome" }
 

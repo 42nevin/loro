@@ -1,0 +1,39 @@
+   Compiling append-only-bytes v0.1.12 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/append-only-bytes)
+   Compiling loro-rle v1.6.0 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/rle)
+   Compiling loro-common v1.16.0 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-common)
+warning: unused import: `logging::log::*`
+  --> /workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-common/src/lib.rs:21:9
+   |
+21 | pub use logging::log::*;
+   |         ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+   Compiling loro-kv-store v1.16.0 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/kv-store)
+   Compiling loro-internal v1.16.2 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal)
+warning: `loro-common` (lib) generated 1 warning (run `cargo fix --lib -p loro-common` to apply 1 suggestion)
+   Compiling loro v1.16.2 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro)
+   Compiling immutable-page-lease v0.1.0 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/experiments/immutable-page-lease)
+    Finished `test` profile [optimized] target(s) in 45.05s
+     Running unittests src/lib.rs (experiment-home/Gits/Redelkasten/builds/immutable-page-lease/debug/deps/immutable_page_lease-3029d4010939b1c6)
+
+running 3 tests
+test tests::failed_or_panicking_generation_publishes_no_lease ... FAILED
+test tests::loro_native_sync_cuts_forks_and_reopen ... ok
+test tests::committed_lease_survives_writes_growth_store_drop_and_threads ... ok
+
+failures:
+
+---- tests::failed_or_panicking_generation_publishes_no_lease stdout ----
+
+thread 'tests::failed_or_panicking_generation_publishes_no_lease' panicked at src/lib.rs:278:9:
+assertion failed: unwind.is_err()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::failed_or_panicking_generation_publishes_no_lease
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

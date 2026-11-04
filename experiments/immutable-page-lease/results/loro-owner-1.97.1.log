@@ -1,0 +1,134 @@
+rustc 1.97.1 (8bab26f4f 2026-07-14)
+binary: rustc
+commit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452
+commit-date: 2026-07-14
+host: x86_64-unknown-linux-gnu
+release: 1.97.1
+LLVM version: 22.1.6
+   Compiling serde v1.0.229
+   Compiling heapless v0.7.17
+   Compiling serde_json v1.0.143
+   Compiling append-only-bytes v0.1.12 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/append-only-bytes)
+   Compiling postcard v1.1.3
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.80s
+     Running unittests src/lib.rs (experiment-home/Gits/Redelkasten/builds/loro-shared-arena/x86_64-unknown-linux-gnu/debug/deps/append_only_bytes-310f1ce2f20f866f)
+
+running 7 tests
+test serde::test_serde::test ... ok
+test tests::it_works ... ok
+test immutable_owner_tests::external_owner_retained_without_copy_across_slice_thread_and_merge ... ok
+test tests::from_bytes ... ok
+test tests::push_large ... ok
+test tests::test ... ok
+test tests::threads ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+   Doc-tests append_only_bytes
+
+running 1 test
+test crates/append-only-bytes/src/lib.rs - (line 14) ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+   Compiling append-only-bytes v0.1.12 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/append-only-bytes)
+   Compiling loro-rle v1.6.0 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/rle)
+   Compiling loro-common v1.16.0 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-common)
+warning: unused import: `logging::log::*`
+  --> crates/loro-common/src/lib.rs:21:9
+   |
+21 | pub use logging::log::*;
+   |         ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling loro-kv-store v1.16.0 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/kv-store)
+   Compiling bench-utils v0.1.0 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/bench-utils)
+warning: `loro-common` (lib) generated 1 warning (run `cargo fix --lib -p loro-common` to apply 1 suggestion)
+   Compiling loro-internal v1.16.2 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal)
+warning: variable does not need to be mutable
+   --> crates/loro-internal/src/macros.rs:35:17
+    |
+ 35 |             let mut m = $crate::version::VersionVector::default();
+    |                 ----^
+    |                 |
+    |                 help: remove this `mut`
+    |
+   ::: crates/loro-internal/src/container/richtext/tracker.rs:846:21
+    |
+846 |         t.checkout(&vv!());
+    |                     ----- in this macro invocation
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+    = note: this warning originates in the macro `vv` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: variable does not need to be mutable
+    --> crates/loro-internal/src/state/container_store/inner_store.rs:1022:13
+     |
+1022 |         let mut source = InnerStore::new(arena.clone(), Configure::default());
+     |             ----^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> crates/loro-internal/src/state/container_store.rs:1011:17
+     |
+1011 |             let mut state = doc.app_state().lock();
+     |                 ----^^^^^
+     |                 |
+     |                 help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> crates/loro-internal/src/state/container_store.rs:1079:17
+     |
+1079 |             let mut state = doc.app_state().lock();
+     |                 ----^^^^^
+     |                 |
+     |                 help: remove this `mut`
+
+warning: method `dead_cache_entry` is never used
+   --> crates/loro-internal/src/state/dead_containers_cache.rs:112:19
+    |
+ 38 | impl DocState {
+    | ------------- method in this implementation
+...
+112 |     pub(crate) fn dead_cache_entry(&self, idx: ContainerIdx) -> Option<bool> {
+    |                   ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `loro-internal` (lib test) generated 5 warnings (run `cargo fix --lib -p loro-internal --tests` to apply 4 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.74s
+     Running unittests src/lib.rs (experiment-home/Gits/Redelkasten/builds/loro-shared-arena/x86_64-unknown-linux-gnu/debug/deps/loro_internal-feb8f1696ebe1893)
+
+running 1 test
+test arena::str_arena::test::external_sealed_owner_rollback_retains_pointer_and_branch ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 427 filtered out; finished in 0.01s
+
+   Compiling loro-common v1.16.0 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-common)
+warning: unused import: `logging::log::*`
+  --> crates/loro-common/src/lib.rs:21:9
+   |
+21 | pub use logging::log::*;
+   |         ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling loro-kv-store v1.16.0 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/kv-store)
+warning: `loro-common` (lib) generated 1 warning (run `cargo fix --lib -p loro-common` to apply 1 suggestion)
+   Compiling loro-internal v1.16.2 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro-internal)
+   Compiling loro v1.16.2 (/workspace/scratch/41cd6b51565e/experiment-home/Gits/Redelkasten/worktrees/loro-shared-arena/crates/loro)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.70s
+     Running tests/shared_arena_experiment.rs (experiment-home/Gits/Redelkasten/builds/loro-shared-arena/x86_64-unknown-linux-gnu/debug/deps/shared_arena_experiment-c988e81667bd46fc)
+
+running 6 tests
+test allocation_error_and_generator_panic_leave_no_atom_or_alias ... ok
+test invalid_generated_utf8_does_not_publish_an_atom ... ok
+test cleared_style_history_is_rejected_before_generation_if_anchors_remain ... ok
+test generated_gestum_cuts_survive_guard_drop_reopen_and_native_update ... ok
+test allocation_context_is_actual_and_rejection_precedes_generation ... ok
+test tiny_extents_unicode_middle_edits_cow_and_concurrent_native_sync ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+

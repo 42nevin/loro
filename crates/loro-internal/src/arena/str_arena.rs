@@ -391,6 +391,36 @@ mod test {
         assert_eq!(branch.len_utf16(), 5);
     }
 
+    #[cfg(feature = "shared_arena_experiment")]
+    #[test]
+    fn external_sealed_owner_rollback_retains_pointer_and_branch() {
+        use std::sync::Arc;
+        struct Owner(Box<[u8]>);
+        // SAFETY: exclusive boxed allocation, never mutated after construction.
+        unsafe impl append_only_bytes::ImmutableBytes for Owner {
+            fn as_bytes(&self) -> &[u8] { &self.0 }
+        }
+        let external = |s: &str| BytesSlice::from_immutable(Arc::new(Owner(s.as_bytes().into())));
+        let first = external("a界");
+        let second = external("🙂玉");
+        let first_ptr = first.as_ptr();
+        let second_ptr = second.as_ptr();
+        let mut arena = StrArena::default();
+        arena.alloc_sealed(first);
+        let checkpoint = arena.checkpoint();
+        arena.alloc_sealed(second);
+        let mut branch = arena.fork_cow();
+        arena.rollback(checkpoint);
+        arena.alloc_sealed(external("Z"));
+        assert_eq!(arena.slice_bytes(..4).as_ptr(), first_ptr);
+        assert_eq!(branch.slice_bytes(4..11).as_ptr(), second_ptr);
+        assert_eq!(arena.slice_str_by_unicode(..), "a界Z");
+        assert_eq!(branch.slice_str_by_unicode(..), "a界🙂玉");
+        drop(arena);
+        assert_eq!(branch.slice_bytes(..4).as_ptr(), first_ptr);
+        assert_eq!(branch.slice_str_by_unicode(..), "a界🙂玉");
+    }
+
     #[test]
     fn many_sealed_segments_seek_and_rollback_preserve_other_owners() {
         for total in [129, 1025] {

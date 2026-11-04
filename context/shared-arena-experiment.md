@@ -16,9 +16,10 @@ The generator receives exactly the reservation's mutable slice; no generated
 reservation for this callback. Each insertion is one extent and may stop at its
 boundary; the caller must split on UTF-8 scalar boundaries.
 
-The allocator must return an owned `append_only_bytes::BytesSlice`. In the pinned
-append-only-bytes 0.1.12 implementation this owns `Arc<RawBytes>`, not an arbitrary
-external page owner. `BytesSlice::from_bytes(reservation)` is therefore an explicit
+The allocator must return an owned `append_only_bytes::BytesSlice`. In the original
+append-only-bytes 0.1.12 implementation this owns native `Arc<RawBytes>`, not an
+arbitrary external page owner. The later external-owner qualification below adds
+an explicitly constrained alternative. `BytesSlice::from_bytes(reservation)` is therefore an explicit
 payload copy and must be counted as such. This hook does **not** establish
 storage-owned zero-copy live Ops. It lets a backend exercise direct reservation
 generation and quantify the required ownership fallback without unsafe lifetime
@@ -27,7 +28,9 @@ extensions. Database transactions/guards can be dropped before the hook returns.
 `StrArena::alloc_sealed` adopts that owner into its immutable segment tree with
 no second payload copy. Index construction scans UTF-8 scalars. The returned
 `InnerListOp::InsertText.slice` and live rich-text state retain native BytesSlice
-owners. After the DB guard expires, live Ops read native RawBytes, not the DB page.
+owners. In the original ownership-copy backend, after the DB guard expires live Ops read
+native RawBytes, not the DB page. The external-owner prototype instead retains
+the committed immutable page through its independently owned lease.
 `apply_local_op_converted` uses the same state, dependency, counter, event-hint,
 and RLE pipeline as ordinary insertion. Different owners prevent physical RLE
 merges; logical scalar IDs remain `(peer, counter + scalar_offset)`.
@@ -104,3 +107,26 @@ The later published-stage recheck also completed online all-features compilation
 successfully after fetching the missing registry dependency; this supersedes the
 initial offline cache-miss limitation above. Focused clippy completed with existing
 style warnings and no errors.
+
+## External-owner qualification
+
+The `codex/shared-arena-owners-20261104` slice vendors append-only-bytes 0.1.12
+and adds an unsafe `ImmutableBytes` trait plus safe `BytesSlice::from_immutable`.
+Its contract requires initialized, immutable, address-stable storage retained
+through the final owner, including protection from external mutation/reclamation.
+This is not a lifetime cast of a database borrow. Existing native owner allocation
+and cross-segment copy paths remain unchanged. RawBytes gains an optional external
+fat Arc pointer (additional allocation metadata); BytesSlice layout is unchanged.
+
+`experiments/immutable-page-lease` implements a deliberately narrow Sanakirja
+1.4.3/core 1.4.1 page owner. It privately owns the environment, commits before
+exposing bytes, never reclaims payload pages and requires unsafe exclusive-file
+opening through the final derived owner. Ordinary metadata B-tree maintenance
+continues. Database guards are dropped before returning the immutable owner.
+No ownership-transfer payload copy occurs, verified with pointer identity.
+
+This establishes feasibility under explicit storage invariants, not qualification
+of arbitrary LMDB/Turso values or production GC. It is separate from the full
+A–D benchmark and does not implement Gestum publication. Native snapshot recovery
+still copies payloads. See the prototype README for the exact safety boundary,
+remaining copies, limitations and reproduction command.
