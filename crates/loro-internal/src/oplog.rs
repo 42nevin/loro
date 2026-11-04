@@ -1,4 +1,4 @@
-mod change_store;
+pub(crate) mod change_store;
 mod known_history;
 pub(crate) use known_history::ImportedValues;
 pub(crate) mod loro_dag;

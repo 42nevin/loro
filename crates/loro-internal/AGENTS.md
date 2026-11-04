@@ -112,3 +112,5 @@ coverage under `crates/fuzz` and ask before running long fuzz targets.
 
 - Native candidate metadata ownership, sparse slots, rollback, and test
   copy counters: [../../context/native-cow-string-metadata.md](../../context/native-cow-string-metadata.md).
+- Experimental ordinary Update block reuse and trusted stored Update readers:
+  [../../context/update-block-reuse.md](../../context/update-block-reuse.md).

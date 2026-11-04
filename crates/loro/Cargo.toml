@@ -26,6 +26,8 @@ tracing = { workspace = true }
 rustc-hash = { workspace = true }
 
 [dev-dependencies]
+xxhash-rust = { workspace = true }
+rle = { package = "loro-rle", path = "../rle" }
 serde_json = { version = "1.0.87", features = ["float_roundtrip"] }
 anyhow = "1.0.83"
 ctor = "0.2"

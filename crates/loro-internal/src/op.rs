@@ -130,6 +130,15 @@ impl Op {
 }
 
 impl RemoteOp<'_> {
+    pub fn counter(&self) -> Counter {
+        self.counter
+    }
+    pub fn container(&self) -> &ContainerID {
+        &self.container
+    }
+    pub fn content(&self) -> &RawOpContent<'_> {
+        &self.content
+    }
     #[allow(unused)]
     pub(crate) fn into_static(self) -> RemoteOp<'static> {
         RemoteOp {

@@ -17,6 +17,8 @@ pub mod diff;
 pub mod diff_calc;
 pub mod handler;
 pub mod sync;
+pub mod update_reuse;
+pub mod update_reuse_work;
 pub use state::container_tree;
 
 use crate::sync::{AtomicBool, AtomicUsize};

@@ -2999,6 +2999,71 @@ impl LoroDoc {
         state.get_path(idx)
     }
 
+    /// Experimental additive export. Produces ordinary Update bytes and leaves the
+    /// default exporter unchanged. Complete source blocks reuse their cached encoding;
+    /// partial blocks are sliced and encoded using the existing native codec.
+    pub fn export_updates_reusing_blocks(
+        &self,
+        from: &VersionVector,
+    ) -> Result<Vec<u8>, LoroEncodeError> {
+        self.with_barrier(|| {
+            let oplog = self.oplog.lock();
+            oplog.check_history_parsable()?;
+            let spans: Vec<_> = oplog
+                .vv()
+                .sub_iter(from)
+                .map(|mut span| {
+                    let lower = oplog
+                        .shallow_since_vv()
+                        .get(&span.peer)
+                        .copied()
+                        .unwrap_or(0);
+                    span.counter.start = span.counter.start.max(lower);
+                    span.counter.end = span.counter.end.max(lower);
+                    span
+                })
+                .collect();
+            let result = crate::encoding::encode_with(
+                crate::encoding::EncodeMode::FastUpdates,
+                &mut |bytes| {
+                    oplog.change_store().export_blocks_reusing(&spans, bytes)?;
+                    Ok(())
+                },
+            )?;
+            oplog.check_history_parsable()?;
+            Ok(result)
+        })
+    }
+
+    /// Experimental range counterpart to export_updates_reusing_blocks.
+    pub fn export_updates_in_range_reusing_blocks(
+        &self,
+        spans: &[IdSpan],
+    ) -> Result<Vec<u8>, LoroEncodeError> {
+        self.with_barrier(|| {
+            let oplog = self.oplog.lock();
+            oplog.check_history_parsable()?;
+            let result = crate::encoding::encode_with(
+                crate::encoding::EncodeMode::FastUpdates,
+                &mut |bytes| {
+                    oplog.change_store().export_blocks_reusing(spans, bytes)?;
+                    Ok(())
+                },
+            )?;
+            oplog.check_history_parsable()?;
+            Ok(result)
+        })
+    }
+
+    /// Source block boundaries and cache states, without decoding operation payloads.
+    /// This diagnostic commits pending transactions, just like export.
+    pub fn update_source_blocks(
+        &self,
+        spans: &[IdSpan],
+    ) -> Vec<crate::update_reuse::UpdateSourceBlock> {
+        self.with_barrier(|| self.oplog.lock().change_store().update_source_blocks(spans))
+    }
+
     #[instrument(skip(self))]
     pub fn export(&self, mode: ExportMode) -> Result<Vec<u8>, LoroEncodeError> {
         self.export_inner(mode, true)

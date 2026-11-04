@@ -5,6 +5,12 @@
 use event::DiffBatch;
 use event::{DiffEvent, Subscriber};
 pub use loro_common::InternalString;
+pub use loro_internal::update_reuse::{
+    decode_update_json, NativeUpdateChange, StoredUpdateReader, UpdateBlockCache, UpdateBlockMeta,
+    UpdateSourceBlock,
+};
+pub use loro_internal::update_reuse_work;
+
 /// Opt-in native branch work observations for diagnostics only.
 #[cfg(feature = "test_utils")]
 pub use loro_internal::cow_work;
@@ -1316,6 +1322,27 @@ impl LoroDoc {
     /// ```
     pub fn export(&self, mode: ExportMode) -> Result<Vec<u8>, LoroEncodeError> {
         self.doc.export(mode)
+    }
+
+    /// Experimental ordinary Update exporter reusing complete source block encodings.
+    /// The default export method is unchanged.
+    pub fn export_updates_reusing_blocks(
+        &self,
+        from: &VersionVector,
+    ) -> Result<Vec<u8>, LoroEncodeError> {
+        self.doc.export_updates_reusing_blocks(from)
+    }
+    /// Experimental range exporter reusing complete source block encodings.
+    pub fn export_updates_in_range_reusing_blocks(
+        &self,
+        spans: &[IdSpan],
+    ) -> Result<Vec<u8>, LoroEncodeError> {
+        self.doc.export_updates_in_range_reusing_blocks(spans)
+    }
+    /// Inspect block boundaries and cache states without decoding operation payloads.
+    /// Commits pending transactions, just like export.
+    pub fn update_source_blocks(&self, spans: &[IdSpan]) -> Vec<UpdateSourceBlock> {
+        self.doc.update_source_blocks(spans)
     }
 
     /// Analyze the container info of the doc

@@ -1601,12 +1601,14 @@ dependencies = [
  "loro-delta 1.13.0",
  "loro-internal 1.16.2",
  "loro-kv-store 1.16.0",
+ "loro-rle 1.6.0",
  "pretty_assertions",
  "rand 0.8.5",
  "rustc-hash",
  "serde_json",
  "serial_test",
  "tracing",
+ "xxhash-rust",
 ]
 
 [[package]]

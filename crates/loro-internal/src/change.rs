@@ -201,6 +201,7 @@ impl<O: Mergable + HasLength + HasIndex + Debug> HasLength for Change<O> {
 impl<O: Mergable + HasLength + HasIndex + Sliceable + HasCounter + Debug> Sliceable for Change<O> {
     // TODO: feels slow, need to confirm whether this affects performance
     fn slice(&self, from: usize, to: usize) -> Self {
+        crate::update_reuse_work::record(|w| w.sliced_changes += 1);
         assert!(from < to);
         assert!(to <= self.atom_len());
         let from_counter = self.id.counter + from as Counter;

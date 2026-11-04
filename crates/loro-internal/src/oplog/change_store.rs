@@ -33,7 +33,7 @@ use std::{
     sync::Arc,
 };
 use tracing::{info_span, warn};
-mod block_encode;
+pub(crate) mod block_encode;
 mod block_meta_encode;
 pub(super) mod iter;
 
@@ -810,6 +810,7 @@ impl ChangeStore {
                     return None;
                 }
 
+                crate::update_reuse_work::record(|w| w.selected_blocks += 1);
                 if let Err(err) = block.ensure_changes(&self.arena) {
                     warn!(block_id = ?_id, ?err, "failed to parse change block");
                     self.parse_failures.record(_id, &err);
@@ -1009,6 +1010,119 @@ impl ChangeStore {
             .sum()
     }
 
+    /// Select source blocks without forcing operation payloads to decode.
+    fn reuse_source_blocks(&self, span: IdSpan) -> Vec<BlockRef> {
+        if span.counter.start >= span.counter.end {
+            return Vec::new();
+        }
+        self.ensure_block_loaded_in_range(
+            Bound::Included(span.id_start()),
+            Bound::Excluded(span.id_end()),
+        );
+        let inner = self.inner.lock();
+        let start = inner
+            .mem_parsed_kv
+            .range(..=span.id_start())
+            .next_back()
+            .filter(|(id, _)| id.peer == span.peer)
+            .map(|(id, _)| id.counter)
+            .unwrap_or(span.counter.start);
+        inner
+            .mem_parsed_kv
+            .range(ID::new(span.peer, start)..span.id_end())
+            .filter(|(_, b)| b.counter_range.1 > span.counter.start)
+            .map(|(_, b)| b.clone())
+            .collect()
+    }
+
+    pub(crate) fn update_source_blocks(
+        &self,
+        spans: &[IdSpan],
+    ) -> Vec<crate::update_reuse::UpdateSourceBlock> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut answer = Vec::new();
+        for span in crate::update_reuse::normalize_spans(spans) {
+            for block in self.reuse_source_blocks(span) {
+                if !seen.insert((block.peer, block.counter_range.0)) {
+                    continue;
+                }
+                let cache = match &block.content {
+                    ChangesBlockContent::Changes(_) => {
+                        crate::update_reuse::UpdateBlockCache::Changes
+                    }
+                    ChangesBlockContent::Bytes(_) => crate::update_reuse::UpdateBlockCache::Bytes,
+                    ChangesBlockContent::Both(_, _) => crate::update_reuse::UpdateBlockCache::Both,
+                };
+                answer.push(crate::update_reuse::UpdateSourceBlock {
+                    peer: block.peer,
+                    start: block.counter_range.0,
+                    end: block.counter_range.1,
+                    cache,
+                });
+            }
+        }
+        answer
+    }
+
+    // Callers hold the owning OpLog lock across selection and cache writeback,
+    // preventing concurrent append from changing the selected source block.
+    pub(crate) fn export_blocks_reusing(
+        &self,
+        spans: &[IdSpan],
+        w: &mut Vec<u8>,
+    ) -> LoroResult<()> {
+        for span in crate::update_reuse::normalize_spans(spans) {
+            for mut block in self.reuse_source_blocks(span) {
+                crate::update_reuse_work::record(|w| w.selected_blocks += 1);
+                let whole = span.counter.start <= block.counter_range.0
+                    && span.counter.end >= block.counter_range.1;
+                let bytes = if whole {
+                    crate::update_reuse_work::record(|w| w.eligible_whole_blocks += 1);
+                    match &block.content {
+                        ChangesBlockContent::Bytes(bytes) | ChangesBlockContent::Both(_, bytes) => {
+                            crate::update_reuse_work::record(|w| w.reused_cached_blocks += 1);
+                            bytes.clone()
+                        }
+                        ChangesBlockContent::Changes(changes) => {
+                            crate::update_reuse_work::record(|w| w.newly_encoded_whole_blocks += 1);
+                            let bytes = ChangesBlockBytes::serialize(changes, &self.arena);
+                            // Keep the original decoded changes and the new encoding together.
+                            // The next local mutation invalidates these bytes through changes_mut.
+                            let mut inner = self.inner.lock();
+                            if let Some(owner) = inner
+                                .mem_parsed_kv
+                                .get_mut(&ID::new(block.peer, block.counter_range.0))
+                            {
+                                Arc::make_mut(owner).content =
+                                    ChangesBlockContent::Both(changes.clone(), bytes.clone());
+                            }
+                            bytes
+                        }
+                    }
+                } else {
+                    block.ensure_changes(&self.arena)?;
+                    let mut changes = Vec::new();
+                    for c in block.content.try_changes().expect("decoded boundary") {
+                        let start = (span.counter.start - c.id.counter).max(0) as usize;
+                        let end =
+                            ((span.counter.end - c.id.counter).max(0) as usize).min(c.atom_len());
+                        if start < end {
+                            changes.push(c.slice(start, end));
+                        }
+                    }
+                    if changes.is_empty() {
+                        continue;
+                    }
+                    ChangesBlockBytes::serialize(&changes, &self.arena)
+                };
+                leb128::write::unsigned(&mut *w, bytes.bytes.len() as u64).unwrap();
+                w.extend_from_slice(&bytes.bytes);
+                crate::update_reuse_work::record(|w| w.copied_bytes += bytes.bytes.len() as u64);
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn export_blocks_from<W: std::io::Write>(
         &self,
         start_vv: &VersionVector,
@@ -1092,6 +1206,7 @@ fn encode_blocks_in_store<W: std::io::Write>(
         let bytes = block.to_bytes(arena);
         leb128::write::unsigned(w, bytes.bytes.len() as u64).unwrap();
         w.write_all(&bytes.bytes).unwrap();
+        crate::update_reuse_work::record(|w| w.copied_bytes += bytes.bytes.len() as u64);
     }
 }
 

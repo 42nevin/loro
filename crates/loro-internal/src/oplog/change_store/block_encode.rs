@@ -271,7 +271,15 @@ pub fn encode_block(block: &[Change], arena: &SharedArena) -> Vec<u8> {
     };
 
     diagnose_block(&out);
-    postcard::to_allocvec(&out).unwrap()
+    let bytes = postcard::to_allocvec(&out).unwrap();
+    crate::update_reuse_work::record(|w| {
+        w.encoded_blocks += 1;
+        w.encoded_bytes += bytes.len() as u64;
+        w.encoded_changes += block.len() as u64;
+        w.encoded_ops += block.iter().map(|c| c.ops().len() as u64).sum::<u64>();
+        w.encoded_atom_ops += block.iter().map(|c| c.atom_len() as u64).sum::<u64>();
+    });
+    bytes
 }
 
 fn encode_keys(keys: Vec<loro_common::InternalString>) -> Vec<u8> {
@@ -556,6 +564,10 @@ pub fn decode_block(
     shared_arena: &SharedArena,
     header: Option<&mut ChangesBlockHeader>,
 ) -> LoroResult<Vec<Change>> {
+    crate::update_reuse_work::record(|w| {
+        w.decoded_blocks += 1;
+        w.decoded_bytes += m_bytes.len() as u64;
+    });
     let doc = postcard::from_bytes(m_bytes)
         .map_err(|e| LoroError::DecodeError(format!("Decode block error {e}").into_boxed_str()))?;
     let mut header_on_stack;
@@ -727,6 +739,11 @@ pub fn decode_block(
             change_index += 1;
         }
     }
+    crate::update_reuse_work::record(|w| {
+        w.decoded_changes += changes.len() as u64;
+        w.decoded_ops += changes.iter().map(|c| c.ops().len() as u64).sum::<u64>();
+        w.decoded_atom_ops += changes.iter().map(|c| c.atom_len() as u64).sum::<u64>();
+    });
     Ok(changes)
 }
 

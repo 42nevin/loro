@@ -301,6 +301,9 @@ const XXH_SEED: u32 = u32::from_le_bytes(*b"LORO");
 impl ParsedHeaderAndBody<'_> {
     /// Return if the checksum is correct.
     fn check_checksum(&self) -> LoroResult<()> {
+        crate::update_reuse_work::record(|w| {
+            w.checksum_scanned_bytes += self.checksum_body.len() as u64
+        });
         match self.mode {
             EncodeMode::OutdatedRle | EncodeMode::OutdatedSnapshot => {
                 if md5::compute(self.checksum_body).0 != self.checksum {
@@ -441,7 +444,7 @@ pub(crate) fn export_state_only_snapshot(
     })
 }
 
-fn encode_with(
+pub(crate) fn encode_with(
     mode: EncodeMode,
     f: &mut dyn FnMut(&mut Vec<u8>) -> Result<(), LoroEncodeError>,
 ) -> Result<Vec<u8>, LoroEncodeError> {
@@ -465,6 +468,7 @@ fn encode_with_capacity(
 
     // CHECKSUM in HEADER
     let checksum_body = &ans[20..];
+    crate::update_reuse_work::record(|w| w.checksum_scanned_bytes += checksum_body.len() as u64);
     let checksum = xxhash_rust::xxh32::xxh32(checksum_body, XXH_SEED);
     ans[16..20].copy_from_slice(&checksum.to_le_bytes());
     Ok(ans)
