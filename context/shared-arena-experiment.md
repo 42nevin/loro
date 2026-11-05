@@ -42,6 +42,11 @@ merges; logical scalar IDs remain `(peer, counter + scalar_offset)`.
   reconstructs owned payloads. This API does not remove those copies.
 - A requested arena slice spanning sealed segments joins just that range into
   AppendOnlyBytes; string-returning APIs can additionally materialize a String.
+- Unicode-to-byte lookup scans the existing sparse index interval through
+  bounded segment views and stops at the requested scalar boundary. It does not
+  join the interval merely to count scalars. No index granularity, retained
+  payload, extent metadata, or replay history has changed. Actual requested
+  cross-segment slices still use the counted joining path.
 - Ordinary mutable-tail rollback copies the retained tail. Sealed generated
   segments are trimmed through immutable references instead.
 - Empty, invalid UTF-8, and allocator errors publish no text atom. External DB
