@@ -56,6 +56,23 @@ CoW branch abandonment, concurrent causal histories, and invalid UTF-8 recovery.
 The StrArena unit test covers rollback across generated sealed segments while
 another branch retains the full history.
 
+## Linear replay operand reuse control
+
+The independent operation-slice control reuses `InnerListOp::InsertText.slice`
+in `RichtextDiffCalculator`'s linear path rather than reconstructing that same
+payload through arena Unicode offsets. The caller first normalizes a partial
+replay range with `Op::slice`, which advances payload range, Unicode metadata,
+position and counter together; it then constructs a full `RichOp` for the
+normalized operation. RLE merging requires adjacent Unicode ranges and
+mergeable payload slices, and merges both together. No new retained metadata
+or cache is introduced. Other CRDT tracker materialization paths are unchanged.
+
+`crates/loro/tests/op_slice_replay.rs` covers multi-scalar partial cuts, native
+and logical descriptors, suffix and overlapping import, atom identity, middle
+edits, concurrent merge, full snapshot and native update round trips, styled
+native text, and source-owner destruction. The import-only read assertion
+separately rejects arena interval reconstruction on the linear path.
+
 ## Qualification commands
 
 With Rust 1.97.1 and cached dependencies:

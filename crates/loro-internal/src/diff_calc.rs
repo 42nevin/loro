@@ -1567,18 +1567,14 @@ impl DiffCalculatorTrait for RichtextDiffCalculator {
                     | InnerListOp::Set { .. } => {
                         unreachable!()
                     }
-                    InnerListOp::InsertText {
-                        slice: _,
-                        unicode_start,
-                        unicode_len: len,
-                        pos,
-                    } => {
-                        let s = oplog.arena.slice_by_unicode(
-                            *unicode_start as usize..(*unicode_start + *len) as usize,
-                        );
+                    InnerListOp::InsertText { slice, pos, .. } => {
+                        // The caller normalizes partial replay ranges with
+                        // Op::slice before constructing this RichOp. The owned
+                        // payload already matches its Unicode range and IDs;
+                        // rebuilding it through the arena repeats index scans.
                         diff.insert_value(
                             *pos as usize,
-                            RichtextStateChunk::new_text(s, op.id_full()),
+                            RichtextStateChunk::new_text(slice.clone(), op.id_full()),
                             (),
                         );
                     }
