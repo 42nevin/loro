@@ -304,9 +304,17 @@ impl StrArena {
 
     #[cfg(feature = "shared_arena_experiment")]
     pub(crate) fn inspect_text_backings(&self) -> Vec<crate::text_slice::TextBackingInfo> {
-        let mut values:Vec<_> = self.sealed.iter().map(|segment|segment.1.backing_info()).collect();
+        let mut values: Vec<_> = self
+            .sealed
+            .iter()
+            .map(|segment| segment.1.backing_info())
+            .collect();
         if !self.bytes.is_empty() {
-            values.push(crate::text_slice::TextBackingInfo{kind:"native",extent:None,range:0..self.bytes.len()});
+            values.push(crate::text_slice::TextBackingInfo {
+                kind: "native",
+                extent: None,
+                range: 0..self.bytes.len(),
+            });
         }
         values
     }
@@ -330,10 +338,9 @@ impl StrArena {
         let start = index.bytes as usize;
         let mut remaining = (unicode_index - index.unicode) as usize;
         if start >= self.sealed_len {
-            let text = std::str::from_utf8(
-                &self.bytes[start - self.sealed_len..end - self.sealed_len],
-            )
-            .unwrap();
+            let text =
+                std::str::from_utf8(&self.bytes[start - self.sealed_len..end - self.sealed_len])
+                    .unwrap();
             return start + unicode_to_utf8_index(text, remaining).unwrap();
         }
 
@@ -434,16 +441,25 @@ mod test {
 
     // Independent oracle uses Rust's scalar boundaries, not arena index metadata.
     fn assert_unicode_boundaries(arena: &mut StrArena, text: &str) {
-        let boundaries: Vec<_> = text.char_indices().map(|(i, _)| i)
-            .chain(std::iter::once(text.len())).collect();
+        let boundaries: Vec<_> = text
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(text.len()))
+            .collect();
         assert_eq!(arena.len_unicode(), boundaries.len() - 1);
         assert_eq!(arena.len_utf16(), text.encode_utf16().count());
         for (scalar, &byte) in boundaries.iter().enumerate() {
-            assert_eq!(arena.unicode_to_byte_index(scalar as u32), byte, "scalar {scalar}");
+            assert_eq!(
+                arena.unicode_to_byte_index(scalar as u32),
+                byte,
+                "scalar {scalar}"
+            );
             assert_eq!(arena.slice_str_by_unicode(scalar..scalar), "");
             if scalar + 1 < boundaries.len() {
-                assert_eq!(arena.slice_str_by_unicode(scalar..scalar + 1),
-                    &text[byte..boundaries[scalar + 1]]);
+                assert_eq!(
+                    arena.slice_str_by_unicode(scalar..scalar + 1),
+                    &text[byte..boundaries[scalar + 1]]
+                );
             }
         }
     }
@@ -454,12 +470,19 @@ mod test {
         struct Owner(Box<[u8]>);
         // SAFETY: immutable boxed bytes remain owned and address-stable.
         unsafe impl append_only_bytes::ImmutableBytes for Owner {
-            fn as_bytes(&self) -> &[u8] { &self.0 }
+            fn as_bytes(&self) -> &[u8] {
+                &self.0
+            }
         }
         struct Resolver(Vec<u8>);
         impl crate::text_slice::ExtentResolver for Resolver {
-            fn with_bytes(&self, _: u64, range: std::ops::Range<usize>,
-                _: &'static str, visit: &mut dyn FnMut(&[u8])) -> std::io::Result<()> {
+            fn with_bytes(
+                &self,
+                _: u64,
+                range: std::ops::Range<usize>,
+                _: &'static str,
+                visit: &mut dyn FnMut(&[u8]),
+            ) -> std::io::Result<()> {
                 visit(&self.0[range]);
                 Ok(())
             }
@@ -470,12 +493,17 @@ mod test {
             let text = ch.to_string();
             let slice = match i % 3 {
                 0 => BytesSlice::from_bytes(text.as_bytes()),
-                1 => append_only_bytes::BytesSlice::from_immutable(
-                    Arc::new(Owner(text.as_bytes().into()))).into(),
+                1 => append_only_bytes::BytesSlice::from_immutable(Arc::new(Owner(
+                    text.as_bytes().into(),
+                )))
+                .into(),
                 _ => {
                     let padded = format!("!!{text}??");
-                    BytesSlice::extent(Arc::new(Resolver(padded.into_bytes())), i as u64,
-                        2..2 + text.len())
+                    BytesSlice::extent(
+                        Arc::new(Resolver(padded.into_bytes())),
+                        i as u64,
+                        2..2 + text.len(),
+                    )
                 }
             };
             arena.alloc_sealed(slice);
@@ -497,16 +525,29 @@ mod test {
     }
 
     #[cfg(feature = "shared_arena_experiment")]
-    fn unicode_extent_read_fixture() -> (StrArena, String,
-        std::sync::Arc<std::sync::Mutex<Vec<std::ops::Range<usize>>>>) {
-        use std::{ops::Range, sync::{Arc, Mutex}};
+    fn unicode_extent_read_fixture(
+        chars_per_extent: usize,
+    ) -> (
+        StrArena,
+        String,
+        std::sync::Arc<std::sync::Mutex<Vec<std::ops::Range<usize>>>>,
+    ) {
+        use std::{
+            ops::Range,
+            sync::{Arc, Mutex},
+        };
         struct Resolver {
             text: String,
             reads: Arc<Mutex<Vec<Range<usize>>>>,
         }
         impl crate::text_slice::ExtentResolver for Resolver {
-            fn with_bytes(&self, _: u64, range: Range<usize>,
-                _: &'static str, visit: &mut dyn FnMut(&[u8])) -> std::io::Result<()> {
+            fn with_bytes(
+                &self,
+                _: u64,
+                range: Range<usize>,
+                _: &'static str,
+                visit: &mut dyn FnMut(&[u8]),
+            ) -> std::io::Result<()> {
                 // Holding this lock through the callback also rejects nested reads.
                 let mut reads = self.reads.try_lock().expect("nested resolver read");
                 reads.push(range.clone());
@@ -516,11 +557,23 @@ mod test {
         }
         let text = "aé界🙂e\u{301}👩\u{200d}💻".repeat(24);
         let reads = Arc::new(Mutex::new(Vec::new()));
-        let resolver = Arc::new(Resolver { text: text.clone(), reads: reads.clone() });
+        let resolver = Arc::new(Resolver {
+            text: text.clone(),
+            reads: reads.clone(),
+        });
         let mut arena = StrArena::default();
-        for (byte, ch) in text.char_indices() {
-            arena.alloc_sealed(BytesSlice::extent(resolver.clone(), 7,
-                byte..byte + ch.len_utf8()));
+        let boundaries: Vec<_> = text
+            .char_indices()
+            .map(|(byte, _)| byte)
+            .chain(std::iter::once(text.len()))
+            .collect();
+        for scalar in (0..boundaries.len() - 1).step_by(chars_per_extent) {
+            let end = (scalar + chars_per_extent).min(boundaries.len() - 1);
+            arena.alloc_sealed(BytesSlice::extent(
+                resolver.clone(),
+                7,
+                boundaries[scalar]..boundaries[end],
+            ));
         }
         reads.lock().unwrap().clear();
         (arena, text, reads)
@@ -529,16 +582,59 @@ mod test {
     #[cfg(feature = "shared_arena_experiment")]
     #[test]
     fn unicode_extent_lookup_stops_at_target_without_reading_later_extents() {
-        let (arena, text, reads) = unicode_extent_read_fixture();
-        for (scalar, byte) in text.char_indices().map(|(i, _)| i)
-            .chain(std::iter::once(text.len())).enumerate() {
+        let (arena, text, reads) = unicode_extent_read_fixture(1);
+        for (scalar, byte) in text
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(text.len()))
+            .enumerate()
+        {
             reads.lock().unwrap().clear();
             assert_eq!(arena.unicode_to_byte_index(scalar as u32), byte);
-            let index = arena.unicode_indexes.iter().rev()
-                .find(|index| index.unicode <= scalar as u32).unwrap();
+            let index = arena
+                .unicode_indexes
+                .iter()
+                .rev()
+                .find(|index| index.unicode <= scalar as u32)
+                .unwrap();
             for read in reads.lock().unwrap().iter() {
-                assert!(read.start >= index.bytes as usize && read.end <= byte,
-                    "lookup {scalar} at byte {byte} read beyond needed interval: {read:?}");
+                assert!(
+                    read.start >= index.bytes as usize && read.end <= byte,
+                    "lookup {scalar} at byte {byte} read beyond needed interval: {read:?}"
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "shared_arena_experiment")]
+    #[test]
+    fn unicode_extent_lookup_stops_in_multiscalar_segment() {
+        let (arena, text, reads) = unicode_extent_read_fixture(4);
+        let boundaries: Vec<_> = text
+            .char_indices()
+            .map(|(byte, _)| byte)
+            .chain(std::iter::once(text.len()))
+            .collect();
+        for (scalar, &byte) in boundaries.iter().enumerate() {
+            reads.lock().unwrap().clear();
+            assert_eq!(arena.unicode_to_byte_index(scalar as u32), byte);
+            // A bounded callback may include the target segment's remaining
+            // scalars, but must not resolve any following segment. At an exact
+            // segment boundary the preceding segment is the final needed one.
+            let segment_end = boundaries[(scalar.div_ceil(4) * 4).min(boundaries.len() - 1)];
+            let index = arena
+                .unicode_indexes
+                .iter()
+                .rev()
+                .find(|index| index.unicode <= scalar as u32)
+                .unwrap();
+            for read in reads.lock().unwrap().iter() {
+                assert!(
+                    read.start >= index.bytes as usize
+                        && read.start < byte
+                        && read.end <= segment_end,
+                    "lookup {scalar} at byte {byte} resolved later segment: {read:?}"
+                );
             }
         }
     }
@@ -546,15 +642,23 @@ mod test {
     #[cfg(feature = "shared_arena_experiment")]
     #[test]
     fn unicode_extent_lookup_does_not_materialize_interval_payload() {
-        let (arena, text, _) = unicode_extent_read_fixture();
+        let (arena, text, _) = unicode_extent_read_fixture(1);
         crate::text_slice::reset_text_copy_metrics();
-        for (scalar, byte) in text.char_indices().map(|(i, _)| i)
-            .chain(std::iter::once(text.len())).enumerate() {
+        for (scalar, byte) in text
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(text.len()))
+            .enumerate()
+        {
             assert_eq!(arena.unicode_to_byte_index(scalar as u32), byte);
         }
         let copies = crate::text_slice::text_copy_metrics();
-        assert!(copies.values().all(|count| count.native_bytes + count.extent_bytes == 0),
-            "Unicode index lookup materialized payload: {copies:?}");
+        assert!(
+            copies
+                .values()
+                .all(|count| count.native_bytes + count.extent_bytes == 0),
+            "Unicode index lookup materialized payload: {copies:?}"
+        );
     }
 
     #[cfg(feature = "shared_arena_experiment")]
@@ -617,25 +721,41 @@ mod test {
     #[cfg(feature = "shared_arena_experiment")]
     #[test]
     fn cross_extent_copy_metrics_include_native_sealed_and_mutable_tail() {
-        use crate::text_slice::{ExtentResolver, TextSlice, reset_text_copy_metrics, text_copy_metrics};
-        use std::{sync::Arc, ops::Range};
+        use crate::text_slice::{
+            reset_text_copy_metrics, text_copy_metrics, ExtentResolver, TextSlice,
+        };
+        use std::{ops::Range, sync::Arc};
         struct Resolver;
         impl ExtentResolver for Resolver {
-            fn with_bytes(&self, _:u64, range:Range<usize>, _: &'static str, visit:&mut dyn FnMut(&[u8])) -> std::io::Result<()> {
-                visit(&b"a"[range]); Ok(())
+            fn with_bytes(
+                &self,
+                _: u64,
+                range: Range<usize>,
+                _: &'static str,
+                visit: &mut dyn FnMut(&[u8]),
+            ) -> std::io::Result<()> {
+                visit(&b"a"[range]);
+                Ok(())
             }
         }
         for logical in [false, true] {
-            let mut arena=StrArena::default();
-            arena.alloc_sealed(if logical {TextSlice::extent(Arc::new(Resolver),1,0..1)} else {TextSlice::from_bytes(b"a")});
+            let mut arena = StrArena::default();
+            arena.alloc_sealed(if logical {
+                TextSlice::extent(Arc::new(Resolver), 1, 0..1)
+            } else {
+                TextSlice::from_bytes(b"a")
+            });
             arena.alloc("b");
             reset_text_copy_metrics();
-            assert_eq!(arena.slice_bytes(..).with_bytes("test", |x| x==b"ab"), true);
-            let counts=text_copy_metrics();
-            let joined=&counts["arena.cross_extent_join"];
-            assert_eq!(joined.native_bytes+joined.extent_bytes,2);
-            assert_eq!(joined.extent_bytes,if logical {1} else {0});
-            assert_eq!(joined.native_bytes,if logical {1} else {2});
+            assert_eq!(
+                arena.slice_bytes(..).with_bytes("test", |x| x == b"ab"),
+                true
+            );
+            let counts = text_copy_metrics();
+            let joined = &counts["arena.cross_extent_join"];
+            assert_eq!(joined.native_bytes + joined.extent_bytes, 2);
+            assert_eq!(joined.extent_bytes, if logical { 1 } else { 0 });
+            assert_eq!(joined.native_bytes, if logical { 1 } else { 2 });
         }
     }
 
