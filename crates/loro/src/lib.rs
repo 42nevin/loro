@@ -2438,6 +2438,22 @@ impl LoroDoc {
     pub fn inspect_text_op_backings(&self) -> Vec<TextBackingInfo> {self.doc.inspect_text_op_backings()}
     /// Correctness-only backing metadata for arena, OpLog and loaded live state.
     pub fn inspect_text_backings(&self) -> TextBackingSnapshot {self.doc.inspect_text_backings()}
+    /// Experimental JSON import with required original immutable text extents.
+    /// The caller must authenticate the complete schema and receipt first.
+    /// This verifies every Text insertion against the ledger, preserving the
+    /// ordinary JSON grammar, structural/style validation and rollback behavior.
+    /// Non-text operands retain JSON's existing lossy value semantics. All text
+    /// bindings must be complete, ordered, nonoverlapping same-resolver extents.
+    /// Ledger/resolver callbacks must not reenter this Doc; extents must remain
+    /// immutable and readable for the lifetime of the imported history/state.
+    pub fn import_json_updates_with_text_extents<T: TryInto<JsonSchema>>(
+        &self,
+        json: T,
+        ledger: &dyn native_wire_recipe::NativeWireLedger,
+    ) -> LoroResult<ImportStatus> {
+        self.doc.import_json_updates_with_text_extents(json, ledger)
+    }
+
     /// Restore typed text operations and their original causal metadata from logical extents.
     /// This experimental path does not reconstruct JSON payloads or a native snapshot.
     pub fn import_extent_descriptors(

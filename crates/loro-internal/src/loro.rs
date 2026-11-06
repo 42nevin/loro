@@ -1016,6 +1016,31 @@ impl LoroDoc {
         })
     }
 
+    /// Import the existing JSON grammar while binding every Text insertion to
+    /// original immutable ledger extents. The caller must already authenticate
+    /// the complete schema and receipt; this checks only text correspondence.
+    /// Other values retain ordinary JSON import/known-history semantics.
+    /// Missing, invalid or mismatched bindings return an error, never fall back
+    /// to native-owned text. The ledger/resolver must not reenter this document
+    /// and must retain immutable extents for the lifetime of all resulting Docs.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub fn import_json_updates_with_text_extents<T: TryInto<JsonSchema>>(
+        &self,
+        json: T,
+        ledger: &dyn crate::native_wire_recipe::NativeWireLedger,
+    ) -> LoroResult<ImportStatus> {
+        let json = json.try_into().map_err(|_| LoroError::InvalidJsonSchema)?;
+        self.with_barrier(|| {
+            let result = self.import_changes_and_apply_delta_to_state_if_needed(
+                |oplog| crate::bound_text_import::decode(json, &oplog.arena, ledger),
+                ImportedValues::Lossy,
+                Default::default(),
+            );
+            self.emit_events();
+            result
+        })
+    }
+
     /// Restore text history directly from typed immutable-extent descriptors.
     /// This takes the native change-import path, preserving original atom IDs and
     /// dependencies, without reconstructing JSON text or a wire snapshot.

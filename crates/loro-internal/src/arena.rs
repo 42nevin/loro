@@ -630,6 +630,24 @@ impl SharedArena {
         })
     }
 
+    /// Adopt backing whose complete bytes the bound importer already compared
+    /// with `text`. Index the authenticated input, without another resolver call
+    /// under the poisonable string-arena lock. This does not copy payload bytes.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(crate) fn alloc_verified_text_slice(
+        &self,
+        slice: BytesSlice,
+        text: &str,
+    ) -> StrAllocResult {
+        let mut arena = self.inner.str.lock();
+        let start = arena.len_unicode();
+        arena.alloc_sealed_with_text(slice, text);
+        StrAllocResult {
+            start,
+            end: arena.len_unicode(),
+        }
+    }
+
     /// alloc str without extra info
     pub fn alloc_str_fast(&self, bytes: &[u8]) {
         let mut text_lock = self.inner.str.lock();

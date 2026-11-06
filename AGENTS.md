@@ -152,3 +152,5 @@ linked issues or traces when relevant.
   [context/native-text-observation.md](context/native-text-observation.md).
 - Feature-gated native multi-extent Op grouping and temporary-view copy accounting:
   [context/native-multi-extent-op.md](context/native-multi-extent-op.md).
+- Feature-gated existing-JSON import with original text extent binding, authentication
+  boundary and copy accounting: [context/bound-text-import-experiment.md](context/bound-text-import-experiment.md).

@@ -122,3 +122,5 @@ coverage under `crates/fuzz` and ask before running long fuzz targets.
   [../../context/native-text-observation.md](../../context/native-text-observation.md).
 - Native multi-extent text Op representation and consumer audit:
   [../../context/native-multi-extent-op.md](../../context/native-multi-extent-op.md).
+- Mixed JSON structural/style import with original immutable text operands:
+  [../../context/bound-text-import-experiment.md](../../context/bound-text-import-experiment.md).

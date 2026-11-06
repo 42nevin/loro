@@ -179,7 +179,7 @@ fn spans(wire: &[u8]) -> LoroResult<Vec<NativeTextSpan>> {
     }
     Ok(result)
 }
-fn extent_refs(binding: &BoundTextExtents) -> LoroResult<Vec<NativeExtentRef>> {
+pub(crate) fn extent_refs(binding: &BoundTextExtents) -> LoroResult<Vec<NativeExtentRef>> {
     if binding.parts.is_empty() {
         return Err(invalid());
     }

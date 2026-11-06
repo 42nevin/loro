@@ -18,6 +18,8 @@ pub mod diff_calc;
 #[cfg(feature = "shared_arena_experiment")]
 pub mod extent_restore;
 #[cfg(feature = "shared_arena_experiment")]
+mod bound_text_import;
+#[cfg(feature = "shared_arena_experiment")]
 pub mod native_wire_recipe;
 #[cfg(feature = "shared_arena_experiment")]
 pub mod native_text_observation;

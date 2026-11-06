@@ -142,6 +142,18 @@ impl StrArena {
         if slice.is_empty() {
             return;
         }
+        slice.with_str("arena.adopt.index", |input| {
+            self.alloc_sealed_with_text(slice.clone(), input);
+        });
+    }
+
+    /// Index bytes already verified against the retained immutable slice.
+    /// No resolver callback runs while installing this arena metadata.
+    pub(super) fn alloc_sealed_with_text(&mut self, slice: BytesSlice, input: &str) {
+        assert_eq!(slice.len(), input.len());
+        if slice.is_empty() {
+            return;
+        }
         if !self.bytes.is_empty() {
             let bytes = std::mem::take(&mut self.bytes);
             let length = bytes.len();
@@ -149,19 +161,17 @@ impl StrArena {
                 .push_back(Segment(self.sealed_len, bytes.slice(..).into()));
             self.sealed_len += length;
         }
-        slice.with_str("arena.adopt.index", |input| {
-            if self.unicode_indexes.is_empty() {
-                self.unicode_indexes.push_back(Index::default());
+        if self.unicode_indexes.is_empty() {
+            self.unicode_indexes.push_back(Index::default());
+        }
+        for c in input.chars() {
+            self.len.bytes += c.len_utf8() as u32;
+            self.len.utf16 += c.len_utf16() as u32;
+            self.len.unicode += 1;
+            if self.len.bytes - self.unicode_indexes.back().unwrap().bytes > INDEX_INTERVAL {
+                self.unicode_indexes.push_back(self.len.scalar_copy());
             }
-            for c in input.chars() {
-                self.len.bytes += c.len_utf8() as u32;
-                self.len.utf16 += c.len_utf16() as u32;
-                self.len.unicode += 1;
-                if self.len.bytes - self.unicode_indexes.back().unwrap().bytes > INDEX_INTERVAL {
-                    self.unicode_indexes.push_back(self.len.scalar_copy());
-                }
-            }
-        });
+        }
         self.sealed_len += slice.len();
         self.sealed
             .push_back(Segment(self.sealed_len - slice.len(), slice));

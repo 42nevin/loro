@@ -1,6 +1,6 @@
 use super::outdated_encode_reordered::ValueRegister;
 use crate::{
-    arena::SharedArena,
+    arena::{SharedArena, StrAllocResult},
     change::{Change, ChangeRef},
     container::{
         list::list_op::{DeleteSpan, DeleteSpanWithId, InnerListOp},
@@ -10,6 +10,7 @@ use crate::{
     },
     op::{FutureInnerContent, InnerContent, Op, SliceRange},
     oplog::BlockChangeRef,
+    text_slice::TextSlice,
     version::Frontiers,
     OpLog, VersionVector,
 };
@@ -538,6 +539,19 @@ pub(crate) fn encode_change(
 }
 
 fn decode_changes(json: JsonSchema, arena: &SharedArena) -> LoroResult<Vec<Change>> {
+    decode_changes_with_text_allocator(json, arena, |_, _, text| {
+        Ok(arena.alloc_str_with_slice(text))
+    })
+}
+
+// The normal decoder remains the sole grammar/structural validation path.
+// Experimental callers may change only how an already decoded text operand is
+// allocated. Identity here is expanded through the same peer table as its Change.
+pub(crate) fn decode_changes_with_text_allocator(
+    json: JsonSchema,
+    arena: &SharedArena,
+    mut alloc_text: impl FnMut(ID, &ContainerID, &str) -> LoroResult<(TextSlice, StrAllocResult)>,
+) -> LoroResult<Vec<Change>> {
     let JsonSchema {
         schema_version,
         start_version,
@@ -576,7 +590,7 @@ fn decode_changes(json: JsonSchema, arena: &SharedArena) -> LoroResult<Vec<Chang
 
         for op in json_ops {
             let next_counter = validate_json_op_counter(expected_counter, &op)?;
-            let op = decode_op(op, arena, &peers)?;
+            let op = decode_op(op, arena, &peers, id.peer, &mut alloc_text)?;
             validate_json_op_created_container_ids(id.peer, &op, arena)?;
             ops.push(op);
             expected_counter = next_counter;
@@ -784,7 +798,13 @@ fn validate_json_tree_create_target(target: &TreeID, expected_id: ID) -> LoroRes
     Ok(())
 }
 
-fn decode_op(op: json::JsonOp, arena: &SharedArena, peers: &Option<Vec<PeerID>>) -> LoroResult<Op> {
+fn decode_op(
+    op: json::JsonOp,
+    arena: &SharedArena,
+    peers: &Option<Vec<PeerID>>,
+    peer: PeerID,
+    alloc_text: &mut impl FnMut(ID, &ContainerID, &str) -> LoroResult<(TextSlice, StrAllocResult)>,
+) -> LoroResult<Op> {
     let json::JsonOp {
         counter,
         container,
@@ -797,7 +817,7 @@ fn decode_op(op: json::JsonOp, arena: &SharedArena, peers: &Option<Vec<PeerID>>)
         ContainerType::Text => match content {
             JsonOpContent::Text(text) => match text {
                 json::TextOp::Insert { pos, text } => {
-                    let (slice, result) = arena.alloc_str_with_slice(&text);
+                    let (slice, result) = alloc_text(ID::new(peer, counter), &container, &text)?;
                     InnerContent::List(InnerListOp::InsertText {
                         slice,
                         unicode_start: result.start as u32,

@@ -43,3 +43,5 @@ schema, and validation entry points.
 
 - Experimental exact-wire skeleton, native text span annotations, trusted ledger
   checks, and limits: [../../../../context/native-wire-recipe-experiment.md](../../../../context/native-wire-recipe-experiment.md).
+- Feature-gated bound text allocator in the existing JSON grammar and its rollback
+  boundary: [../../../../context/bound-text-import-experiment.md](../../../../context/bound-text-import-experiment.md).
