@@ -148,7 +148,17 @@ impl Mergable for Op {
     }
 
     fn merge(&mut self, other: &Self, cfg: &()) {
-        self.content.merge(&other.content, cfg)
+        #[cfg(feature = "shared_arena_experiment")]
+        let before = if crate::native_text_observation::enabled() {
+            crate::native_text_observation::describe(self).zip(crate::native_text_observation::describe(other))
+        } else { None };
+        self.content.merge(&other.content, cfg);
+        #[cfg(feature = "shared_arena_experiment")]
+        if let Some((left, right)) = before {
+            crate::native_text_observation::emit(crate::native_text_observation::NativeTextObservation::Merge {
+                left, right, result: crate::native_text_observation::describe(self).unwrap(),
+            });
+        }
     }
 }
 
@@ -163,11 +173,21 @@ impl Sliceable for Op {
         assert!(to > from, "{to} should be greater than {from}");
         assert!(to <= self.atom_len());
         let content: InnerContent = self.content.slice(from, to);
-        Op {
+        let result = Op {
             counter: (self.counter + from as Counter),
             content,
             container: self.container,
+        };
+        #[cfg(feature = "shared_arena_experiment")]
+        if crate::native_text_observation::enabled() {
+            if let Some((source, sliced)) = crate::native_text_observation::describe(self)
+                .zip(crate::native_text_observation::describe(&result)) {
+                crate::native_text_observation::emit(crate::native_text_observation::NativeTextObservation::Slice {
+                    source, scalar_range: from..to, result: sliced,
+                });
+            }
         }
+        result
     }
 }
 

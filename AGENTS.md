@@ -148,3 +148,5 @@ linked issues or traces when relevant.
   [context/native-wire-recipe-experiment.md](context/native-wire-recipe-experiment.md).
 - Experimental ordinary styled insertion allocator and custody boundaries:
   [context/styled-text-allocation-experiment.md](context/styled-text-allocation-experiment.md).
+- Opt-in native insertion/RLE/finalization evidence and provider-only grouping control:
+  [context/native-text-observation.md](context/native-text-observation.md).

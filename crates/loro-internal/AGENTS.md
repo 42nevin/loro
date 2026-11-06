@@ -118,3 +118,5 @@ coverage under `crates/fuzz` and ask before running long fuzz targets.
   boundaries: [../../context/styled-text-allocation-experiment.md](../../context/styled-text-allocation-experiment.md).
 - Checked timestamp distances for optional Change merging and admitted snapshot
   history: [../../context/timestamp-merge-safety.md](../../context/timestamp-merge-safety.md).
+- Opt-in actual native text observation and diagnostic limitations:
+  [../../context/native-text-observation.md](../../context/native-text-observation.md).

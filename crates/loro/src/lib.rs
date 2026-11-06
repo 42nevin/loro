@@ -2427,6 +2427,8 @@ pub use loro_internal::arena::{TextAllocationContext, TextExtentAllocator};
 pub use loro_internal::extent_restore::{ExtentChangeDescriptor, ExtentOpDescriptor, ExtentTextOp};
 #[cfg(feature = "shared_arena_experiment")]
 pub use loro_internal::native_wire_recipe;
+#[cfg(feature = "shared_arena_experiment")]
+pub use loro_internal::native_text_observation;
 pub use loro_internal::text_slice::{ExtentResolver, TextBackingInfo, TextBackingSnapshot, TextSlice};
 #[cfg(feature = "shared_arena_experiment")]
 pub use loro_internal::text_slice::{reset_text_copy_metrics, text_copy_metrics, TextCopyCount};

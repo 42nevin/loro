@@ -546,6 +546,9 @@ impl Transaction {
         };
 
         let last_id = change.id_last();
+        #[cfg(feature = "shared_arena_experiment")]
+        let observation = crate::native_text_observation::enabled().then(||
+            crate::native_text_observation::finalized(self.doc.as_ptr() as usize, &self.arena, &change));
         if let Err(err) = oplog.import_local_change(change) {
             state.abort_txn();
             drop(state);
@@ -553,6 +556,8 @@ impl Transaction {
             return Err(err);
         }
 
+        #[cfg(feature = "shared_arena_experiment")]
+        if let Some(observation) = observation { crate::native_text_observation::emit(observation); }
         state.commit_txn(
             Frontiers::from_id(last_id),
             diff.map(|arr| InternalDocDiff {
@@ -725,6 +730,7 @@ impl Transaction {
                     event_len: unicode_len as u32,
                 },
                 doc,
+                Some(pos),
                 move |_, raw| Op {
                     counter: raw.id.counter,
                     container,
@@ -770,9 +776,14 @@ impl Transaction {
             };
             let (slice, info) = self.arena.alloc_generated_text_checked(
                 &context, text.len(), allocator,
-                &mut |buffer| buffer.copy_from_slice(text.as_bytes()), Some(text.as_bytes()),
+                &mut |buffer| {
+                    buffer.copy_from_slice(text.as_bytes());
+                    // Caller-input transfer into the allocator's initial buffer,
+                    // not a retained native-owner or extent materialization copy.
+                    crate::text_slice::record_copy("allocated.input_string", text.len(), false);
+                }, Some(text.as_bytes()),
             ).map_err(|e| LoroError::Unknown(e.to_string().into_boxed_str()))?;
-            return self.apply_local_op_converted(container, content, event, doc, move |_, raw| Op {
+            return self.apply_local_op_converted(container, content, event, doc, Some(unicode_pos), move |_, raw| Op {
                 counter: raw.id.counter,
                 container,
                 content: InnerContent::List(InnerListOp::InsertText {
@@ -794,7 +805,10 @@ impl Transaction {
         // check whether context and txn are referring to the same state context
         doc: &LoroDoc,
     ) -> LoroResult<()> {
-        self.apply_local_op_converted(container, content, event, doc, |arena, raw| {
+        self.apply_local_op_converted(container, content, event, doc,
+            #[cfg(feature = "shared_arena_experiment")]
+            None,
+            |arena, raw| {
             arena.convert_raw_op(raw)
         })
     }
@@ -805,6 +819,8 @@ impl Transaction {
         content: RawOpContent,
         event: EventHint,
         doc: &LoroDoc,
+        #[cfg(feature = "shared_arena_experiment")]
+        observed_unicode_pos: Option<usize>,
         convert: impl FnOnce(&SharedArena, &RawOp) -> Op,
     ) -> LoroResult<()> {
         // A transaction must be applied to the document it was created for.
@@ -905,6 +921,18 @@ impl Transaction {
                 .or_insert_with(|| (container_hints.len(), container_hints.last().cloned()));
         }
 
+        #[cfg(feature = "shared_arena_experiment")]
+        if crate::native_text_observation::enabled() {
+            if let Some((observed, unicode_pos)) = crate::native_text_observation::describe(&op).zip(observed_unicode_pos) {
+                crate::native_text_observation::insertion(self.doc.as_ptr() as usize,
+                    crate::arena::TextAllocationContext {
+                        id: raw_op.id, container: self.arena.idx_to_id(container).unwrap(),
+                        unicode_pos, entity_pos: observed.entity_pos as usize, lamport: raw_op.lamport,
+                        deps: if self.local_ops.is_empty() { self.frontiers.clone() }
+                            else { Frontiers::from_id(raw_op.id.inc(-1)) },
+                    }, &op);
+            }
+        }
         match container_hints.last_mut() {
             Some(last) if last.can_merge(&event) => {
                 last.merge_right(&event);
