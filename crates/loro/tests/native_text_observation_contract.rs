@@ -1,6 +1,7 @@
 #![cfg(feature = "shared_arena_experiment")]
 //! Provider-only grouping control: immutable preseeded adjacent ranges let the
-//! real RLE implementation merge. This is not an app allocator adoption proof.
+//! real RLE implementation merge. Distinct extents remain ordered physical parts
+//! inside a composite native Op. This is not an app allocator adoption proof.
 use loro::{ExtentResolver, LoroDoc, TextExtentAllocator, TextSlice, ExportMode, VersionVector};
 use loro::native_text_observation::{start_native_text_observations, take_native_text_observations, NativeTextObservation};
 use std::{io, ops::Range, sync::Arc};
@@ -55,12 +56,13 @@ fn actual_native_grouping_and_physical_split_are_observed() {
     assert!(events.iter().any(|e| matches!(e, NativeTextObservation::Merge { left, right, result }
         if left.counter == 0 && right.counter == 1 && result.scalar_count == 2 && result.backing.range == (0..4))));
     let finalized = events.iter().find_map(|e| match e { NativeTextObservation::Finalize { native_op_count, text_ops, .. } => Some((*native_op_count,text_ops)), _ => None }).unwrap();
-    assert_eq!(finalized.0, 2);
-    assert_eq!(finalized.1[0].original_ranges.len(), 2);
+    assert_eq!(finalized.0, 1);
+    assert_eq!(finalized.1[0].original_ranges.len(), 3);
     assert_eq!(finalized.1[0].original_ranges[0].range, 0..1);
     assert_eq!(finalized.1[0].original_ranges[1].range, 1..4);
-    assert_eq!(finalized.1[1].original_ranges[0].extent, Some(12));
+    assert_eq!(finalized.1[0].original_ranges[2].extent, Some(12));
     assert!(events.iter().any(|e| matches!(e, NativeTextObservation::Slice { result, .. }
-        if result.counter == 1 && result.backing.extent == Some(11) && result.backing.range == (1..4))));
+        if result.counter == 1 && result.backing_parts.iter().map(|p|(p.extent,p.range.clone())).collect::<Vec<_>>()
+            == vec![(Some(11),1..4),(Some(12),0..4)])));
     assert!(take_native_text_observations().is_empty());
 }

@@ -120,3 +120,5 @@ coverage under `crates/fuzz` and ask before running long fuzz targets.
   history: [../../context/timestamp-merge-safety.md](../../context/timestamp-merge-safety.md).
 - Opt-in actual native text observation and diagnostic limitations:
   [../../context/native-text-observation.md](../../context/native-text-observation.md).
+- Native multi-extent text Op representation and consumer audit:
+  [../../context/native-multi-extent-op.md](../../context/native-multi-extent-op.md).

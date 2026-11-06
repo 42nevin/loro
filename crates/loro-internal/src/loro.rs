@@ -1047,7 +1047,7 @@ impl LoroDoc {
             for change in oplog.iter_changes_peer_by_peer(&VersionVector::default(), oplog.vv()) {
                 for op in change.ops.iter() {
                     if let InnerContent::List(InnerListOp::InsertText { slice, .. }) = &op.content {
-                        result.push(slice.backing_info());
+                        result.extend(slice.backing_parts());
                     }
                 }
             }

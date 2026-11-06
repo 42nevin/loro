@@ -1,7 +1,7 @@
 # Native text observation experiment
 
-Verified against code 2026-11-06. Contracts are authored, not yet executed in
-this recovered environment; the qualified historical toolchain is unavailable.
+Verified against code 2026-11-06. The observation and multi-extent contracts
+execute under Rust 1.97.1 in the isolated continuation qualification lane.
 
 `native_text_observation` is additive and feature-gated by
 `shared_arena_experiment`. Start and drain a thread-local diagnostic trace around
@@ -34,7 +34,8 @@ can establish the resulting local grouping. A trace is confined to its thread.
 `native_text_observation_contract.rs` exercises a provider-only immutable,
 preseeded same-extent control: two compatible insertions (`a`, `玉`) have adjacent
 ranges and the real native RLE implementation groups them. A third insertion
-(`🙂`) has another extent and remains a separate Op. Partial native Update export
+(`🙂`) has another extent. With the multi-extent continuation it remains a
+separate physical part inside the grouped Op. Partial native Update export
 is expected to witness real scalar/byte slicing. This fixture does not establish
 that the application's allocator supplies a shared extent or adopts grouped Ops.
 
@@ -49,4 +50,8 @@ separately from extent materialization and retained-owner copies; do not infer
 this work from the allocator's returned length. If the generator copied input
 but later allocation validation failed, the actual copy still counts. The
 contract asserts three closure executions and eight UTF-8 bytes for `a玉🙂`;
-this assertion is authored but remains unexecuted in the blocked environment.
+this assertion passes in the Rust 1.97.1 continuation qualification lane.
+
+The feature-gated multi-extent continuation adds `ObservedTextOp.backing_parts`
+for exact ordered physical references. The singular `backing` field is only a
+compatibility summary for composite slices. See [native-multi-extent-op.md](native-multi-extent-op.md).

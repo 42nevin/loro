@@ -142,7 +142,7 @@ impl RichtextState {
         self.iter_raw(&mut |chunk| {
             if let RichtextStateChunk::Text(text) = chunk {
                 if !text.bytes().is_empty() {
-                    info.push(text.bytes().backing_info());
+                    info.extend(text.bytes().backing_parts());
                 }
             }
         });

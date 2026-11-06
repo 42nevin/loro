@@ -98,9 +98,25 @@ pub struct TextBackingSnapshot {
     pub unloaded_containers_unknown: bool,
 }
 
+/// Immutable metadata for a concatenation of extents from one resolver.
+/// Fields are private: all parts are nonempty and the checked total is cached.
+#[cfg(feature = "shared_arena_experiment")]
+pub struct ExtentSequence {
+    resolver: Arc<dyn ExtentResolver>,
+    parts: Vec<(u64, Range<usize>)>,
+    byte_len: usize,
+}
+#[cfg(feature = "shared_arena_experiment")]
+impl fmt::Debug for ExtentSequence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExtentSequence").field("parts", &self.parts).field("byte_len", &self.byte_len).finish()
+    }
+}
 #[derive(Clone)]
 pub enum TextSlice {
     Native(BytesSlice),
+    #[cfg(feature = "shared_arena_experiment")]
+    ExtentSequence(Arc<ExtentSequence>),
     Extent {
         resolver: Arc<dyn ExtentResolver>,
         extent: u64,
@@ -111,6 +127,8 @@ impl fmt::Debug for TextSlice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Native(x) => x.fmt(f),
+            #[cfg(feature = "shared_arena_experiment")]
+            Self::ExtentSequence(x) => x.fmt(f),
             Self::Extent { extent, range, .. } => f
                 .debug_struct("Extent")
                 .field("id", extent)
@@ -129,16 +147,12 @@ impl PartialEq for TextSlice {
         if self.ptr_eq(other) && self.start() == other.start() && self.end() == other.end() {
             return true;
         }
-        match (self, other) {
-            (Self::Extent { resolver: a, .. }, Self::Extent { resolver: b, .. })
-                if !Arc::ptr_eq(a, b) =>
-            {
-                // Never hold locks in two independent stores in opposite orders.
-                let left = self.materialize("text.equal.cross_store");
-                other.with_bytes("text.equal", |right| left.as_ref() == right)
-            }
-            _ => self.with_bytes("text.equal", |a| other.with_bytes("text.equal", |b| a == b)),
+        if self.extent_resolver().zip(other.extent_resolver()).is_some_and(|(a,b)| !Arc::ptr_eq(a,b)) {
+            // Release the first store's view before entering another store.
+            let left = self.materialize("text.equal.cross_store");
+            return other.with_bytes("text.equal", |right| left.as_ref() == right);
         }
+        self.with_bytes("text.equal", |a| other.with_bytes("text.equal", |b| a == b))
     }
 }
 impl Eq for TextSlice {}
@@ -146,8 +160,70 @@ impl TextSlice {
     pub fn backing_info(&self) -> TextBackingInfo {
         match self {
             Self::Native(x) => TextBackingInfo {kind:"native",extent:None,range:x.start()..x.end()},
+            #[cfg(feature = "shared_arena_experiment")]
+            Self::ExtentSequence(x) => TextBackingInfo {kind:"extent_sequence",extent:None,range:0..x.byte_len},
             Self::Extent{extent,range,..} => TextBackingInfo {kind:"extent",extent:Some(*extent),range:range.clone()},
         }
+    }
+
+    /// Ordered physical ranges, never a fabricated contiguous extent identity.
+    pub fn backing_parts(&self) -> Vec<TextBackingInfo> {
+        #[cfg(feature = "shared_arena_experiment")]
+        if let Self::ExtentSequence(sequence) = self {
+            return sequence.parts.iter().map(|(id, range)| TextBackingInfo {
+                kind: "extent", extent: Some(*id), range: range.clone(),
+            }).collect();
+        }
+        vec![self.backing_info()]
+    }
+    fn extent_resolver(&self) -> Option<&Arc<dyn ExtentResolver>> {
+        match self {
+            Self::Extent { resolver, .. } => Some(resolver),
+            #[cfg(feature = "shared_arena_experiment")]
+            Self::ExtentSequence(sequence) => Some(&sequence.resolver),
+            _ => None,
+        }
+    }
+    /// Representation identity, not byte equality. Used by diagnostic lineage.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(crate) fn same_backing(&self, other: &Self) -> bool {
+        if let Some((a,b)) = self.extent_resolver().zip(other.extent_resolver()) {
+            return Arc::ptr_eq(a,b) && self.backing_parts() == other.backing_parts();
+        }
+        self.ptr_eq(other) && self.start() == other.start() && self.end() == other.end()
+    }
+    #[cfg(feature = "shared_arena_experiment")]
+    fn from_extent_parts(resolver: Arc<dyn ExtentResolver>, mut parts: Vec<(u64, Range<usize>)>) -> Self {
+        parts.retain(|(_, range)| !range.is_empty());
+        if parts.len() == 1 {
+            let (extent, range) = parts.pop().unwrap();
+            return Self::extent(resolver, extent, range);
+        }
+        let byte_len = parts.iter().try_fold(0usize, |n, (_, r)| n.checked_add(r.len())).expect("extent sequence length overflow");
+        Self::ExtentSequence(Arc::new(ExtentSequence { resolver, parts, byte_len }))
+    }
+    #[cfg(feature = "shared_arena_experiment")]
+    fn join_extents(sequence: &ExtentSequence, consumer: &'static str) -> io::Result<Vec<u8>> {
+        let mut output = Vec::with_capacity(sequence.byte_len);
+        for (extent, range) in &sequence.parts {
+            let part = Self::extent(sequence.resolver.clone(), *extent, range.clone());
+            let mut copied = 0;
+            let result = part.try_with_bytes(consumer, |bytes| {
+                output.extend_from_slice(bytes);
+                copied = bytes.len();
+                // Count the actual temporary copy even if resolution later fails
+                // or panics after invoking its visitor.
+                record_copy("text_slice.extent_sequence_join", bytes.len(), true);
+            });
+            // Match the existing single-extent materialization contract: metric
+            // callbacks run after the resolver has released its bounded view.
+            if copied != 0 {
+                sequence.resolver.record_materialization(*extent, range.clone(),
+                    "text_slice.extent_sequence_join", copied);
+            }
+            result?;
+        }
+        Ok(output)
     }
 
     pub fn extent(resolver: Arc<dyn ExtentResolver>, extent: u64, range: Range<usize>) -> Self {
@@ -167,6 +243,8 @@ impl TextSlice {
     pub fn len(&self) -> usize {
         match self {
             Self::Native(x) => x.len(),
+            #[cfg(feature = "shared_arena_experiment")]
+            Self::ExtentSequence(x) => x.byte_len,
             Self::Extent { range, .. } => range.len(),
         }
     }
@@ -176,6 +254,8 @@ impl TextSlice {
     pub fn start(&self) -> usize {
         match self {
             Self::Native(x) => x.start(),
+            #[cfg(feature = "shared_arena_experiment")]
+            Self::ExtentSequence(_) => 0,
             Self::Extent { range, .. } => range.start,
         }
     }
@@ -183,7 +263,7 @@ impl TextSlice {
         self.start() + self.len()
     }
     pub fn is_extent(&self) -> bool {
-        matches!(self, Self::Extent { .. })
+        self.extent_resolver().is_some()
     }
     pub fn try_with_bytes<R>(
         &self,
@@ -192,6 +272,11 @@ impl TextSlice {
     ) -> io::Result<R> {
         match self {
             Self::Native(x) => Ok(f(x)),
+            #[cfg(feature = "shared_arena_experiment")]
+            Self::ExtentSequence(sequence) => {
+                let joined = Self::join_extents(sequence, consumer)?;
+                Ok(f(&joined))
+            }
             Self::Extent {
                 resolver,
                 extent,
@@ -234,6 +319,9 @@ impl TextSlice {
     pub fn materialize(&self, consumer: &'static str) -> Cow<'_, [u8]> {
         match self {
             Self::Native(x) => Cow::Borrowed(x),
+            #[cfg(feature = "shared_arena_experiment")]
+            Self::ExtentSequence(sequence) => Cow::Owned(Self::join_extents(sequence, consumer)
+                .expect("text extent resolution failed")),
             Self::Extent {
                 resolver,
                 extent,
@@ -248,6 +336,15 @@ impl TextSlice {
     }
     pub fn record_materialization(&self, consumer: &'static str, bytes: usize) {
         record_copy(consumer, bytes, self.is_extent());
+        #[cfg(feature = "shared_arena_experiment")]
+        if let Self::ExtentSequence(sequence) = self {
+            let mut remaining = bytes;
+            for (extent, range) in &sequence.parts {
+                let count = remaining.min(range.len());
+                if count != 0 { sequence.resolver.record_materialization(*extent, range.clone(), consumer, count); }
+                remaining -= count;
+            }
+        }
         if let Self::Extent {
             resolver,
             extent,
@@ -305,6 +402,21 @@ impl TextSlice {
         assert!(start <= end && end <= self.len());
         match self {
             Self::Native(x) => Self::Native(x.slice_clone(start..end)),
+            #[cfg(feature = "shared_arena_experiment")]
+            Self::ExtentSequence(sequence) => {
+                if start == 0 && end == sequence.byte_len { return self.clone(); }
+                let mut offset = 0;
+                let mut parts = Vec::new();
+                for (extent, range) in &sequence.parts {
+                    let part_end = offset + range.len();
+                    let lo = start.max(offset);
+                    let hi = end.min(part_end);
+                    if lo < hi { parts.push((*extent, range.start + (lo - offset)..range.start + (hi - offset))); }
+                    offset = part_end;
+                    if offset >= end { break; }
+                }
+                Self::from_extent_parts(sequence.resolver.clone(), parts)
+            }
             Self::Extent {
                 resolver,
                 extent,
@@ -322,6 +434,8 @@ impl TextSlice {
     pub fn ptr_eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Native(a), Self::Native(b)) => a.ptr_eq(b),
+            #[cfg(feature = "shared_arena_experiment")]
+            (Self::ExtentSequence(a), Self::ExtentSequence(b)) => Arc::ptr_eq(a,b),
             (
                 Self::Extent {
                     resolver: a,
@@ -338,11 +452,26 @@ impl TextSlice {
         }
     }
     pub fn can_merge(&self, other: &Self) -> bool {
+        #[cfg(feature = "shared_arena_experiment")]
+        if let Some((a,b)) = self.extent_resolver().zip(other.extent_resolver()) {
+            return Arc::ptr_eq(a,b);
+        }
         self.ptr_eq(other) && self.end() == other.start()
     }
     pub fn try_merge(&mut self, other: &Self) -> Result<(), append_only_bytes::MergeFailed> {
         if !self.can_merge(other) {
             return Err(append_only_bytes::MergeFailed);
+        }
+        #[cfg(feature = "shared_arena_experiment")]
+        if let Some(resolver) = self.extent_resolver().cloned() {
+            // Preserve the existing contiguous single-extent fast path.
+            if let (Self::Extent { extent: a, range: ar, .. }, Self::Extent { extent: b, range: br, .. }) = (&mut *self, other) {
+                if a == b && ar.end == br.start { ar.end = br.end; return Ok(()); }
+            }
+            let parts = self.backing_parts().into_iter().chain(other.backing_parts())
+                .map(|p| (p.extent.expect("extent-backed sequence"), p.range)).collect();
+            *self = Self::from_extent_parts(resolver, parts);
+            return Ok(());
         }
         match (self, other) {
             (Self::Native(a), Self::Native(b)) => a.try_merge(b),

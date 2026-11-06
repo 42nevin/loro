@@ -304,7 +304,7 @@ impl StrArena {
 
     #[cfg(feature = "shared_arena_experiment")]
     pub(crate) fn inspect_text_backings(&self) -> Vec<crate::text_slice::TextBackingInfo> {
-        let mut values:Vec<_> = self.sealed.iter().map(|segment|segment.1.backing_info()).collect();
+        let mut values:Vec<_> = self.sealed.iter().flat_map(|segment|segment.1.backing_parts()).collect();
         if !self.bytes.is_empty() {
             values.push(crate::text_slice::TextBackingInfo{kind:"native",extent:None,range:0..self.bytes.len()});
         }

@@ -184,8 +184,7 @@ fn extent_refs(binding: &BoundTextExtents) -> LoroResult<Vec<NativeExtentRef>> {
         return Err(invalid());
     }
     let mut refs = Vec::new();
-    for part in &binding.parts {
-        let info = part.backing_info();
+    for info in binding.parts.iter().flat_map(TextSlice::backing_parts) {
         let extent = info.extent.ok_or_else(invalid)?;
         if info.range.start >= info.range.end {
             return Err(invalid());

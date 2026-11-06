@@ -13,7 +13,9 @@ pub struct ObservedTextOp {
     pub container_index: u32,
     pub scalar_count: usize,
     pub entity_pos: u32,
+    /// Compatibility summary; use backing_parts for physical identity.
     pub backing: TextBackingInfo,
+    pub backing_parts: Vec<TextBackingInfo>,
 }
 #[derive(Clone, Debug)]
 pub struct FinalizedTextOp {
@@ -49,7 +51,7 @@ pub(crate) fn enabled() -> bool { TRACE.with(|x| x.borrow().is_some()) }
 pub(crate) fn describe(op: &Op) -> Option<ObservedTextOp> {
     let InnerContent::List(InnerListOp::InsertText { slice, pos, .. }) = &op.content else { return None; };
     Some(ObservedTextOp { counter: op.counter, container_index: op.container.to_index(),
-        scalar_count: op.atom_len(), entity_pos: *pos, backing: slice.backing_info() })
+        scalar_count: op.atom_len(), entity_pos: *pos, backing: slice.backing_info(), backing_parts: slice.backing_parts() })
 }
 pub(crate) fn emit(event: NativeTextObservation) {
     TRACE.with(|x| { if let Some(t) = x.borrow_mut().as_mut() { t.events.push(event); } });
@@ -83,12 +85,10 @@ pub(crate) fn finalized(doc: usize, arena: &SharedArena, change: &Change) -> Nat
                     // Slice native content directly to preserve scalar/byte
                     // correspondence without emitting another Op-level event.
                     if let InnerContent::List(InnerListOp::InsertText { slice, .. }) = original.content.slice(from, to) {
-                        let InnerContent::List(InnerListOp::InsertText { slice: final_slice, .. }) = &op.content else { unreachable!() };
-                        let same_owner = slice.ptr_eq(final_slice);
-                        let part = slice.backing_info();
-                        if same_owner && part.kind == observed.backing.kind && part.extent == observed.backing.extent
-                            && part.range.start >= observed.backing.range.start
-                            && part.range.end <= observed.backing.range.end { original_ranges.push(part); }
+                        let final_from = (original.counter - op.counter).max(0) as usize;
+                        let final_to = final_from + to - from;
+                        let InnerContent::List(InnerListOp::InsertText { slice: final_slice, .. }) = op.content.slice(final_from, final_to) else { unreachable!() };
+                        if slice.same_backing(&final_slice) { original_ranges.extend(slice.backing_parts()); }
                     }
                 }
             }

@@ -32,8 +32,10 @@ owners. In the original ownership-copy backend, after the DB guard expires live 
 native RawBytes, not the DB page. The external-owner prototype instead retains
 the committed immutable page through its independently owned lease.
 `apply_local_op_converted` uses the same state, dependency, counter, event-hint,
-and RLE pipeline as ordinary insertion. Different owners prevent physical RLE
-merges; logical scalar IDs remain `(peer, counter + scalar_offset)`.
+and RLE pipeline as ordinary insertion. Different native-byte owners prevent physical RLE merges. The later feature-gated
+[ordered extent sequence](native-multi-extent-op.md) permits same-resolver logical
+extents to group without payload repacking. Logical scalar IDs remain
+`(peer, counter + scalar_offset)`.
 
 ## Remaining copies and limitations
 

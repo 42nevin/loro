@@ -150,3 +150,5 @@ linked issues or traces when relevant.
   [context/styled-text-allocation-experiment.md](context/styled-text-allocation-experiment.md).
 - Opt-in native insertion/RLE/finalization evidence and provider-only grouping control:
   [context/native-text-observation.md](context/native-text-observation.md).
+- Feature-gated native multi-extent Op grouping and temporary-view copy accounting:
+  [context/native-multi-extent-op.md](context/native-multi-extent-op.md).
