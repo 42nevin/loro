@@ -479,6 +479,11 @@ impl ChangeStore {
         Ok(changes)
     }
 
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(crate) fn annotate_text_spans(bytes: &[u8]) -> LoroResult<Vec<crate::native_wire_recipe::NativeTextSpan>> {
+        block_encode::annotate_text_spans(bytes)
+    }
+
     /// Decode an update block. Changes the doc already has are kept; see
     /// [`Self::decode_snapshot_for_updates`].
     pub(crate) fn decode_block_bytes(bytes: Bytes, arena: &SharedArena) -> LoroResult<Vec<Change>> {

@@ -556,6 +556,26 @@ pub fn decode_block(
     shared_arena: &SharedArena,
     header: Option<&mut ChangesBlockHeader>,
 ) -> LoroResult<Vec<Change>> {
+    decode_block_inner(m_bytes, shared_arena, header,
+        #[cfg(feature = "shared_arena_experiment")]
+        None,
+    )
+}
+
+#[cfg(feature = "shared_arena_experiment")]
+pub(super) fn annotate_text_spans(m_bytes: &[u8]) -> LoroResult<Vec<crate::native_wire_recipe::NativeTextSpan>> {
+    let mut spans = Vec::new();
+    decode_block_inner(m_bytes, &SharedArena::new(), None, Some(&mut spans))?;
+    Ok(spans)
+}
+
+fn decode_block_inner(
+    m_bytes: &[u8],
+    shared_arena: &SharedArena,
+    header: Option<&mut ChangesBlockHeader>,
+    #[cfg(feature = "shared_arena_experiment")]
+    mut text_spans: Option<&mut Vec<crate::native_wire_recipe::NativeTextSpan>>,
+) -> LoroResult<Vec<Change>> {
     let doc = postcard::from_bytes(m_bytes)
         .map_err(|e| LoroError::DecodeError(format!("Decode block error {e}").into_boxed_str()))?;
     let mut header_on_stack;
@@ -693,6 +713,20 @@ pub fn decode_block(
         let cid = cids
             .get(container_index as usize)
             .ok_or(LoroError::DecodeDataCorruptionError)?;
+        #[cfg(feature = "shared_arena_experiment")]
+        if cid.container_type() == loro_common::ContainerType::Text {
+            if let (Some(spans), Value::Str(text)) = (text_spans.as_deref_mut(), &value) {
+                // ValueReader borrows this exact UTF-8 range from the native value
+                // section. Pointer offsets identify grammar spans, never matches.
+                let start = (text.as_ptr() as usize).checked_sub(m_bytes.as_ptr() as usize)
+                    .ok_or(LoroError::DecodeDataCorruptionError)?;
+                let end = start.checked_add(text.len()).ok_or(LoroError::DecodeDataCorruptionError)?;
+                if end > m_bytes.len() { return Err(LoroError::DecodeDataCorruptionError); }
+                spans.push(crate::native_wire_recipe::NativeTextSpan {
+                    offset: start, byte_len: text.len(), unicode_len: u32::try_from(text.chars().count()).map_err(|_| LoroError::DecodeDataCorruptionError)?, op: ID::new(peer, counter), container: cid.clone(),
+                });
+            }
+        }
         let content = decode_op(
             cid,
             value,

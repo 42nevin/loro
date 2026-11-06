@@ -54,6 +54,11 @@ pub(crate) fn record_copy(consumer: &'static str, bytes: usize, extent: bool) {
 /// bytes is invalid. Sessions may be explicitly reused across one edit/export;
 /// the resolver must not keep a transaction alive merely because a handle exists.
 /// `visit` must execute exactly once on the requested range, before returning.
+/// Native generated insertion can nest immutable resolver visits (for example,
+/// transaction application calls into rich-text chunk validation). A resolver
+/// must permit these nested read callbacks without an exclusive non-reentrant
+/// lock. The experiment's LMDB adapter uses reentrant locking with shared state
+/// borrows; callers must not mutate or close the underlying session during a view.
 /// Fallible allocation/recovery boundaries use `try_with_bytes`; legacy native
 /// infallible consumers treat a lost/missing immutable extent as an invariant
 /// failure. Such candidates must not be published after resolver failure.

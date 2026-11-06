@@ -114,3 +114,7 @@ coverage under `crates/fuzz` and ask before running long fuzz targets.
   copy counters: [../../context/native-cow-string-metadata.md](../../context/native-cow-string-metadata.md).
 
 - Experimental text reservation allocation, live-Op owners and copy trace: [../../context/shared-arena-experiment.md](../../context/shared-arena-experiment.md).
+- Ordinary styled text allocation hook, shared handler semantics and error
+  boundaries: [../../context/styled-text-allocation-experiment.md](../../context/styled-text-allocation-experiment.md).
+- Checked timestamp distances for optional Change merging and admitted snapshot
+  history: [../../context/timestamp-merge-safety.md](../../context/timestamp-merge-safety.md).

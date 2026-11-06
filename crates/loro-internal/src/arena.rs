@@ -1,7 +1,8 @@
 mod str_arena;
 /// Native identity and causal operands known before a generated text allocation.
-/// Positions are both provided explicitly; the experimental style-free route
-/// requires them to agree. Commit timestamp/message are deliberately absent:
+/// Positions are both provided explicitly. The generated style-free route
+/// requires them to agree; ordinary allocated insertion preserves distinct
+/// Unicode/entity positions around style anchors. Commit timestamp/message are deliberately absent:
 /// they may be changed by commit options after allocation.
 #[cfg(feature = "shared_arena_experiment")]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -552,6 +553,20 @@ impl SharedArena {
         allocator: &mut dyn TextExtentAllocator,
         generate: &mut dyn FnMut(&mut [u8]),
     ) -> std::io::Result<(BytesSlice, StrAllocResult)> {
+        self.alloc_generated_text_checked(context, byte_len, allocator, generate, None)
+    }
+
+    /// Ordinary insertion supplies its original bytes so an allocator cannot
+    /// substitute different content between the RawOp and adopted native slice.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(crate) fn alloc_generated_text_checked(
+        &self,
+        context: &TextAllocationContext,
+        byte_len: usize,
+        allocator: &mut dyn TextExtentAllocator,
+        generate: &mut dyn FnMut(&mut [u8]),
+        expected: Option<&[u8]>,
+    ) -> std::io::Result<(BytesSlice, StrAllocResult)> {
         let mut calls = 0;
         let mut checked = |buffer: &mut [u8]| {
             assert_eq!(buffer.len(), byte_len, "reservation size mismatch");
@@ -574,7 +589,11 @@ impl SharedArena {
         }
         slice
             .try_with_bytes("arena.generated.validate", |b| {
-                std::str::from_utf8(b).map(|_| ())
+                std::str::from_utf8(b).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                if expected.is_some_and(|expected| expected != b) {
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "allocator returned different insertion bytes"));
+                }
+                Ok::<(), std::io::Error>(())
             })?
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         let mut arena = self.inner.str.lock();

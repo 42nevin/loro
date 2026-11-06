@@ -2056,6 +2056,28 @@ impl TextHandler {
         })
     }
 
+    /// Ordinary native Unicode insertion with original allocation custody.
+    /// Uses the same anchor placement, inherited styles and event hints as insert.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub fn insert_unicode_with_allocator(
+        &self,
+        pos: usize,
+        text: &str,
+        allocator: &mut dyn crate::arena::TextExtentAllocator,
+    ) -> LoroResult<()> {
+        if cfg!(feature = "wasm") {
+            return Err(LoroError::Unknown("allocated insertion is native-only".into()));
+        }
+        let inner = self.inner.try_attached_state()?;
+        if text.is_empty() {
+            return self.insert_unicode(pos, text);
+        }
+        inner.with_txn(|txn| {
+            self.insert_with_txn_and_attr_allocated(txn, pos, text, None, PosType::Unicode, Some(allocator))?;
+            Ok(())
+        })
+    }
+
     /// Insert text at `pos` using the given `pos_type` coordinate system.
     ///
     /// This method requires auto_commit to be enabled.
@@ -2189,6 +2211,22 @@ impl TextHandler {
         attr: Option<&FxHashMap<String, LoroValue>>,
         pos_type: PosType,
     ) -> Result<Vec<(InternalString, LoroValue)>, LoroError> {
+        self.insert_with_txn_and_attr_allocated(txn, pos, s, attr, pos_type,
+            #[cfg(feature = "shared_arena_experiment")]
+            None,
+        )
+    }
+
+    fn insert_with_txn_and_attr_allocated(
+        &self,
+        txn: &mut Transaction,
+        pos: usize,
+        s: &str,
+        attr: Option<&FxHashMap<String, LoroValue>>,
+        pos_type: PosType,
+        #[cfg(feature = "shared_arena_experiment")]
+        allocator: Option<&mut dyn crate::arena::TextExtentAllocator>,
+    ) -> Result<Vec<(InternalString, LoroValue)>, LoroError> {
         if s.is_empty() {
             return Ok(Vec::new());
         }
@@ -2219,18 +2257,12 @@ impl TextHandler {
             })?;
             if fast {
                 let unicode_len = s.chars().count();
-                txn.apply_local_op(
+                txn.apply_text_insert(
                     inner.container_idx,
-                    crate::op::RawOpContent::List(
-                        crate::container::list::list_op::ListOp::Insert {
-                            slice: ListSlice::RawStr {
-                                str: Cow::Borrowed(s),
-                                unicode_len,
-                            },
-                            // entity_index == unicode pos (no style anchors)
-                            pos,
-                        },
-                    ),
+                    pos,
+                    pos,
+                    s,
+                    unicode_len,
                     EventHint::InsertText {
                         // event index == unicode index (non-wasm)
                         pos: pos as u32,
@@ -2239,6 +2271,8 @@ impl TextHandler {
                         event_len: unicode_len as u32,
                     },
                     &inner.doc,
+                    #[cfg(feature = "shared_arena_experiment")]
+                    allocator,
                 )?;
                 return Ok(Vec::new());
             }
@@ -2366,15 +2400,12 @@ impl TextHandler {
             unicode_len
         };
 
-        txn.apply_local_op(
+        txn.apply_text_insert(
             inner.container_idx,
-            crate::op::RawOpContent::List(crate::container::list::list_op::ListOp::Insert {
-                slice: ListSlice::RawStr {
-                    str: Cow::Borrowed(s),
-                    unicode_len,
-                },
-                pos: entity_index,
-            }),
+            pos,
+            entity_index,
+            s,
+            unicode_len,
             EventHint::InsertText {
                 pos: event_index as u32,
                 styles,
@@ -2382,6 +2413,8 @@ impl TextHandler {
                 event_len: event_len as u32,
             },
             &inner.doc,
+            #[cfg(feature = "shared_arena_experiment")]
+            allocator,
         )?;
 
         Ok(override_styles)

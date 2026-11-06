@@ -2425,6 +2425,8 @@ impl ContainerTrait for LoroText {
 pub use loro_internal::arena::{TextAllocationContext, TextExtentAllocator};
 #[cfg(feature = "shared_arena_experiment")]
 pub use loro_internal::extent_restore::{ExtentChangeDescriptor, ExtentOpDescriptor, ExtentTextOp};
+#[cfg(feature = "shared_arena_experiment")]
+pub use loro_internal::native_wire_recipe;
 pub use loro_internal::text_slice::{ExtentResolver, TextBackingInfo, TextBackingSnapshot, TextSlice};
 #[cfg(feature = "shared_arena_experiment")]
 pub use loro_internal::text_slice::{reset_text_copy_metrics, text_copy_metrics, TextCopyCount};
@@ -2445,6 +2447,20 @@ impl LoroDoc {
 }
 
 impl LoroText {
+    /// Experimental ordinary native Unicode insertion retaining allocator-owned
+    /// text. Preserves ordinary rich-text style/anchor semantics. The allocator
+    /// must be non-reentrant for writes and must not perform producer I/O when
+    /// used as a producer-side immutable-memory ledger.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub fn insert_unicode_with_allocator(
+        &self,
+        pos: usize,
+        text: &str,
+        allocator: &mut dyn TextExtentAllocator,
+    ) -> LoroResult<()> {
+        self.handler.insert_unicode_with_allocator(pos, text, allocator)
+    }
+
     /// Experimental storage reservation insertion using Unicode positions.
     #[cfg(feature = "shared_arena_experiment")]
     pub fn insert_generated_unicode(

@@ -739,6 +739,53 @@ impl Transaction {
         })
     }
 
+    /// Preserve ordinary handler-computed rich-text positions and style hints,
+    /// changing only ownership of the actual native insertion allocation.
+    pub(super) fn apply_text_insert(
+        &mut self,
+        container: ContainerIdx,
+        unicode_pos: usize,
+        entity_pos: usize,
+        text: &str,
+        unicode_len: usize,
+        event: EventHint,
+        doc: &LoroDoc,
+        #[cfg(feature = "shared_arena_experiment")]
+        allocator: Option<&mut dyn crate::arena::TextExtentAllocator>,
+    ) -> LoroResult<()> {
+        let content = RawOpContent::List(crate::container::list::list_op::ListOp::Insert {
+            slice: crate::op::ListSlice::RawStr { str: Cow::Borrowed(text), unicode_len },
+            pos: entity_pos,
+        });
+        #[cfg(feature = "shared_arena_experiment")]
+        if let Some(allocator) = allocator {
+            let context = crate::arena::TextAllocationContext {
+                id: ID::new(self.peer, self.next_counter),
+                container: self.arena.idx_to_id(container).expect("registered text container"),
+                unicode_pos,
+                entity_pos,
+                lamport: self.next_lamport,
+                deps: if self.local_ops.is_empty() { self.frontiers.clone() }
+                    else { Frontiers::from_id(ID::new(self.peer, self.next_counter - 1)) },
+            };
+            let (slice, info) = self.arena.alloc_generated_text_checked(
+                &context, text.len(), allocator,
+                &mut |buffer| buffer.copy_from_slice(text.as_bytes()), Some(text.as_bytes()),
+            ).map_err(|e| LoroError::Unknown(e.to_string().into_boxed_str()))?;
+            return self.apply_local_op_converted(container, content, event, doc, move |_, raw| Op {
+                counter: raw.id.counter,
+                container,
+                content: InnerContent::List(InnerListOp::InsertText {
+                    slice, unicode_start: info.start as u32,
+                    unicode_len: unicode_len as u32, pos: entity_pos as u32,
+                }),
+            });
+        }
+        #[cfg(not(feature = "shared_arena_experiment"))]
+        let _ = unicode_pos;
+        self.apply_local_op(container, content, event, doc)
+    }
+
     pub(super) fn apply_local_op(
         &mut self,
         container: ContainerIdx,

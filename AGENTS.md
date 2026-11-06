@@ -144,3 +144,7 @@ linked issues or traces when relevant.
   [context/native-cow-string-metadata.md](context/native-cow-string-metadata.md).
 
 - Generated reservation allocation and explicit live-Op ownership fallback: [context/shared-arena-experiment.md](context/shared-arena-experiment.md).
+- Experimental exact-wire skeleton and original text extent correspondence:
+  [context/native-wire-recipe-experiment.md](context/native-wire-recipe-experiment.md).
+- Experimental ordinary styled insertion allocator and custody boundaries:
+  [context/styled-text-allocation-experiment.md](context/styled-text-allocation-experiment.md).

@@ -17,6 +17,8 @@ pub mod diff;
 pub mod diff_calc;
 #[cfg(feature = "shared_arena_experiment")]
 pub mod extent_restore;
+#[cfg(feature = "shared_arena_experiment")]
+pub mod native_wire_recipe;
 pub mod handler;
 pub mod sync;
 pub mod text_slice;

@@ -270,7 +270,13 @@ impl Change {
             && other.id.counter == self.id.counter + self.content_len() as Counter
             && other.deps.len() == 1
             && other.deps.as_single().unwrap().peer == self.id.peer
-            && other.timestamp - self.timestamp <= merge_interval
+            // Coalescing is optional. Preserve both metadata boundaries when
+            // timestamps decrease or their distance cannot be represented.
+            // Such history can already be retained by native snapshots.
+            && other
+                .timestamp
+                .checked_sub(self.timestamp)
+                .is_some_and(|delta| delta >= 0 && delta <= merge_interval)
             && self.commit_msg == other.commit_msg
         {
             debug_assert!(other.timestamp >= self.timestamp);

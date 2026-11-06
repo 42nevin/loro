@@ -452,6 +452,103 @@ mod tests {
         assert!(matches!(err, LoroError::DecodeError(_)));
     }
 
+    /// A lossless receipt codec must preserve accepted wire spelling, not merely
+    /// the decoded Change or the ignored twelve-byte envelope prefix.
+    #[test]
+    fn lossless_recipe_contract_accepts_overlong_block_length() {
+        let source = LoroDoc::new_auto_commit();
+        source.set_peer_id(42).unwrap();
+        source.get_map("receipt").insert("value", "original").unwrap();
+        let original = source.export(ExportMode::Updates {
+            from: std::borrow::Cow::Owned(VersionVector::default()),
+        }).unwrap();
+        let mut different = original.clone();
+        let last_length_byte = (22..different.len())
+            .find(|&i| different[i] & 0x80 == 0).unwrap();
+        different[last_length_byte] |= 0x80;
+        different.insert(last_length_byte + 1, 0);
+        let checksum = xxhash_rust::xxh32::xxh32(&different[20..], super::super::XXH_SEED);
+        different[16..20].copy_from_slice(&checksum.to_le_bytes());
+        let canonical_doc = LoroDoc::new_auto_commit();
+        canonical_doc.import(&original).unwrap();
+        let variant_doc = LoroDoc::new_auto_commit();
+        variant_doc.import(&different).unwrap();
+        assert_eq!(canonical_doc.get_deep_value(), variant_doc.get_deep_value());
+        assert_eq!(canonical_doc.oplog_vv(), variant_doc.oplog_vv());
+        assert_ne!(original, different);
+        if let Some(path) = std::env::var_os("LORO_RECIPE_FIXTURE_DIR") {
+            let path = std::path::PathBuf::from(path);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("canonical-update.bin"), original).unwrap();
+            std::fs::write(path.join("overlong-block-length-update.bin"), different).unwrap();
+        }
+    }
+
+    /// Repeated physical block occurrences are distinct wire spans even when
+    /// their native op identities coincide. Establish admission before using the
+    /// fixture to qualify a skeleton recipe.
+    #[test]
+    fn lossless_recipe_contract_accepts_duplicate_blocks() {
+        let source = LoroDoc::new_auto_commit();
+        source.set_peer_id(42).unwrap();
+        source.get_text("receipt").insert_unicode(0, "original玉").unwrap();
+        let original = source.export(ExportMode::Updates {
+            from: std::borrow::Cow::Owned(VersionVector::default()),
+        }).unwrap();
+        let mut different = original.clone();
+        different.extend_from_slice(&original[22..]);
+        let checksum = xxhash_rust::xxh32::xxh32(&different[20..], super::super::XXH_SEED);
+        different[16..20].copy_from_slice(&checksum.to_le_bytes());
+        let canonical_doc = LoroDoc::new_auto_commit();
+        canonical_doc.import(&original).unwrap();
+        let variant_doc = LoroDoc::new_auto_commit();
+        variant_doc.import(&different).unwrap();
+        assert_eq!(canonical_doc.get_deep_value(), variant_doc.get_deep_value());
+        assert_eq!(canonical_doc.oplog_vv(), variant_doc.oplog_vv());
+        assert_eq!(serde_json::to_value(canonical_doc.export_json_updates(&VersionVector::default(), &canonical_doc.oplog_vv(), false)).unwrap(),
+            serde_json::to_value(variant_doc.export_json_updates(&VersionVector::default(), &variant_doc.oplog_vv(), false)).unwrap());
+        assert_ne!(original, different);
+        if let Some(path) = std::env::var_os("LORO_RECIPE_FIXTURE_DIR") {
+            let path = std::path::PathBuf::from(path);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("single-text-block-update.bin"), original).unwrap();
+            std::fs::write(path.join("duplicate-text-block-update.bin"), different).unwrap();
+        }
+    }
+
+    #[test]
+    fn lossless_recipe_contract_accepts_overlapping_text_cuts() {
+        let source = LoroDoc::new_auto_commit();
+        source.set_peer_id(42).unwrap();
+        source.get_text("receipt").insert_unicode(0, "a玉🙂Z").unwrap();
+        let original = source.export(ExportMode::Updates {
+            from: std::borrow::Cow::Owned(VersionVector::default()),
+        }).unwrap();
+        let mut different = original.clone();
+        for (start, end) in [(0, 2), (2, 4)] {
+            let cut = source.export(ExportMode::UpdatesInRange {
+                spans: std::borrow::Cow::Owned(vec![IdSpan::new(42, start, end)]),
+            }).unwrap();
+            different.extend_from_slice(&cut[22..]);
+        }
+        let checksum = xxhash_rust::xxh32::xxh32(&different[20..], super::super::XXH_SEED);
+        different[16..20].copy_from_slice(&checksum.to_le_bytes());
+        let canonical_doc = LoroDoc::new_auto_commit();
+        canonical_doc.import(&original).unwrap();
+        let variant_doc = LoroDoc::new_auto_commit();
+        variant_doc.import(&different).unwrap();
+        assert_eq!(canonical_doc.get_deep_value(), variant_doc.get_deep_value());
+        assert_eq!(canonical_doc.oplog_vv(), variant_doc.oplog_vv());
+        assert_eq!(serde_json::to_value(canonical_doc.export_json_updates(&VersionVector::default(), &canonical_doc.oplog_vv(), false)).unwrap(),
+            serde_json::to_value(variant_doc.export_json_updates(&VersionVector::default(), &variant_doc.oplog_vv(), false)).unwrap());
+        if let Some(path) = std::env::var_os("LORO_RECIPE_FIXTURE_DIR") {
+            let path = std::path::PathBuf::from(path);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("full-unicode-text-update.bin"), original).unwrap();
+            std::fs::write(path.join("overlapping-unicode-text-cuts-update.bin"), different).unwrap();
+        }
+    }
+
     #[test]
     fn full_export_round_trips_lazy_child_parent_conflict_but_shallow_rejects() {
         fn doc_with_child(root: &str) -> (LoroDoc, loro_common::ContainerID) {

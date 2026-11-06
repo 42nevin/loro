@@ -1085,7 +1085,15 @@ impl TryFrom<String> for JsonSchema {
     }
 }
 
+#[cfg(feature = "shared_arena_experiment")]
+#[path = "native_value_visitor.rs"]
+mod native_value_visitor;
+
 pub mod json {
+    #[cfg(feature = "shared_arena_experiment")]
+    pub use super::native_value_visitor::{
+        JsonNativeValueField, JsonNativeValueMut, counter_operand_bits, unknown_operand_equal, visit_native_values_mut,
+    };
     use crate::{
         encoding::OwnedValue,
         version::{Frontiers, VersionRange},
@@ -1915,3 +1923,7 @@ mod tests {
         assert_eq!(json.changes[0].ops.len(), 2);
     }
 }
+
+#[cfg(all(test, feature = "shared_arena_experiment"))]
+#[path = "native_value_visitor_tests.rs"]
+mod native_value_visitor_tests;

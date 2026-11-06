@@ -40,3 +40,6 @@ schema, and validation entry points.
 - `cargo test -p loro-internal --test mergeable_container` when snapshot changes
   can affect mergeable child retention.
 - Root `pnpm test` for shared import/export semantic changes.
+
+- Experimental exact-wire skeleton, native text span annotations, trusted ledger
+  checks, and limits: [../../../../context/native-wire-recipe-experiment.md](../../../../context/native-wire-recipe-experiment.md).
