@@ -1672,6 +1672,16 @@ impl DiffCalculatorTrait for RichtextDiffCalculator {
         ) {
             match value.value() {
                 RichtextChunkValue::Text(text) => {
+                    #[cfg(feature = "shared_arena_experiment")]
+                    {
+                        let mut next = IdFull::new(id.peer, id.counter, lamport.unwrap());
+                        for bytes in oplog.arena.slice_by_unicode_parts(text.start as usize..text.end as usize) {
+                            let chunk = TextChunk::new(bytes, next);
+                            next = next.inc(chunk.unicode_len());
+                            delta.push_insert(RichtextStateChunk::Text(chunk), ());
+                        }
+                    }
+                    #[cfg(not(feature = "shared_arena_experiment"))]
                     delta.push_insert(
                         RichtextStateChunk::Text(
                             // PERF: can be speedup by acquiring lock on arena

@@ -206,6 +206,29 @@ impl StrArena {
         self.slice_bytes(start..end)
     }
 
+    /// Preserve physical owners when a logical text range crosses sealed pieces.
+    /// The caller must keep pieces separate rather than demand a contiguous buffer.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub fn slice_by_unicode_parts(&mut self, range: impl RangeBounds<usize>) -> Vec<BytesSlice> {
+        let (start, end) = self.unicode_range_to_utf8_range(range);
+        if start == end { return Vec::new(); }
+        let mut parts = Vec::new();
+        if start < self.sealed_len {
+            let first = self.segment_boundary(start, true).saturating_sub(1);
+            for position in first..self.sealed.len() {
+                let Segment(offset, bytes) = &self.sealed[position];
+                if *offset >= end { break; }
+                let lo = start.saturating_sub(*offset);
+                let hi = (end - offset).min(bytes.len());
+                if lo < hi { parts.push(bytes.slice_clone(lo..hi)); }
+            }
+        }
+        if end > self.sealed_len {
+            parts.push(self.bytes.slice(start.saturating_sub(self.sealed_len)..end-self.sealed_len).into());
+        }
+        parts
+    }
+
     #[inline]
     pub fn slice_str_by_unicode(
         &mut self,
@@ -390,6 +413,21 @@ impl StrArena {
 mod test {
 
     use super::*;
+
+    #[cfg(feature = "shared_arena_experiment")]
+    #[test]
+    fn unicode_parts_keep_cross_segment_owners_and_partial_boundaries() {
+        let mut arena=StrArena::default();
+        let a=BytesSlice::direct_extent(1,append_only_bytes::BytesSlice::from_bytes("a界".as_bytes())).unwrap();
+        let b=BytesSlice::direct_extent(2,append_only_bytes::BytesSlice::from_bytes("🙂e\u{301}".as_bytes())).unwrap();
+        arena.alloc_sealed(a.clone());arena.alloc_sealed(b.clone());
+        let parts=arena.slice_by_unicode_parts(1..4);
+        assert_eq!(parts.len(),2);
+        assert!(parts[0].ptr_eq(&a));assert!(parts[1].ptr_eq(&b));
+        assert_eq!(parts[0].with_str("test",str::to_owned),"界");
+        assert_eq!(parts[1].with_str("test",str::to_owned),"🙂e");
+        assert!(arena.slice_by_unicode_parts(2..2).is_empty());
+    }
 
     #[cfg(feature = "shared_arena_experiment")]
     #[test]

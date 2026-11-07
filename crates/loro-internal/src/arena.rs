@@ -840,6 +840,12 @@ impl SharedArena {
         self.inner.str.lock().slice_by_unicode(range)
     }
 
+    #[cfg(feature = "shared_arena_experiment")]
+    #[inline]
+    pub fn slice_by_unicode_parts(&self, range: impl RangeBounds<usize>) -> Vec<BytesSlice> {
+        self.inner.str.lock().slice_by_unicode_parts(range)
+    }
+
     #[inline]
     pub fn slice_by_utf8(&self, range: impl RangeBounds<usize>) -> BytesSlice {
         self.inner.str.lock().slice_bytes(range)

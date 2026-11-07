@@ -446,3 +446,54 @@ fn bound_import_indexes_verified_text_without_arena_resolver_callbacks() {
         .iter()
         .all(|part| part.kind == "extent"));
 }
+
+#[test]
+fn cross_page_direct_import_preserves_visible_owners_unicode_ids_and_style() {
+    struct Direct {
+        context: Option<TextAllocationContext>,
+        parts: Vec<(TextAllocationContext, TextSlice)>,
+    }
+    impl TextExtentAllocator for Direct {
+        fn begin_allocation(&mut self,c:&TextAllocationContext)->io::Result<()> {self.context=Some(c.clone());Ok(())}
+        fn allocate_text(&mut self,len:usize,generate:&mut dyn FnMut(&mut [u8]))->io::Result<TextSlice> {
+            let mut bytes=vec![0;len];generate(&mut bytes);
+            let slice=TextSlice::direct_extent(900+self.parts.len() as u64,
+                append_only_bytes::BytesSlice::from_bytes(&bytes))?;
+            self.parts.push((self.context.take().unwrap(),slice.clone()));Ok(slice)
+        }
+    }
+    impl NativeWireLedger for Direct {
+        fn text_extents(&self,id:ID,container:&ContainerID,unicode:u32,bytes:usize)->LoroResult<Option<BoundTextExtents>> {
+            let Some((_,part))=self.parts.iter().find(|(c,_)|c.id==id&&&c.container==container) else{return Ok(None);};
+            assert_eq!(part.len(),bytes);
+            assert_eq!(part.with_str("test",|s|s.chars().count()),unicode as usize);
+            Ok(Some(BoundTextExtents {provenance:ExtentProvenance::OriginalLocal,parts:vec![part.clone()]}))
+        }
+        fn verify_wire_receipt(&self,_:&[u8])->LoroResult<()> {unreachable!()}
+        fn verify_typed_semantics(&self,_:&[u8])->LoroResult<()> {unreachable!()}
+    }
+    let source=LoroDoc::new();source.set_peer_id(881).unwrap();source.set_record_timestamp(false);
+    source.config_default_text_style(Some(StyleConfig{expand:ExpandType::Both}));
+    let text=source.get_text("body");
+    let a="玉🙂".repeat(580);let b="e\u{301}界🙂".repeat(180);
+    let na=a.chars().count();let nb=b.chars().count();
+    let mut ledger=Direct{context:None,parts:vec![]};
+    text.insert_unicode_with_allocator(0,&a,&mut ledger).unwrap();
+    text.insert_unicode_with_allocator(na,&b,&mut ledger).unwrap();
+    text.mark(na-1..na+2,"bold",true).unwrap();source.commit();
+    let schema=source.export_json_updates_without_peer_compression(&VersionVector::default(),&source.oplog_vv());
+    let dst=LoroDoc::new();dst.import_json_updates_with_text_extents(schema,&ledger).unwrap();
+    assert_eq!(canonical(&dst),canonical(&source));
+    assert_eq!(dst.oplog_vv(),source.oplog_vv());
+    assert_eq!(dst.oplog_frontiers(),source.oplog_frontiers());
+    assert_eq!(dst.get_text("body").to_delta(),text.to_delta());
+    let snapshot=dst.get_text("body").shared_text_snapshot().unwrap();
+    assert_eq!(snapshot.unicode_len,na+nb);
+    assert_eq!(snapshot.byte_len,a.len()+b.len());
+    for run in snapshot.runs {
+        let info=run.backing_info();
+        let original=ledger.parts.iter().map(|(_,p)|p).find(|p|p.backing_info().extent==info.extent).unwrap();
+        assert_eq!(info.kind,"direct_extent");
+        assert_eq!(run.direct_bytes().unwrap().as_ptr(),unsafe {original.direct_bytes().unwrap().as_ptr().add(info.range.start)});
+    }
+}
