@@ -133,6 +133,27 @@ impl RichtextState {
         }
     }
 
+    /// Retain only current visible chunks, in order, without consulting OpLog.
+    /// Handles remain immutable and valid after this state is edited or dropped.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(crate) fn shared_text_snapshot(&self, container: ContainerID) -> crate::text_slice::TextStateSnapshot {
+        let mut snapshot = crate::text_slice::TextStateSnapshot {
+            container, version: self.version_id, runs: Vec::new(),
+            byte_len: 0, unicode_len: 0, utf16_len: 0,
+        };
+        self.iter_raw(&mut |chunk| {
+            if let RichtextStateChunk::Text(text) = chunk {
+                if !text.bytes().is_empty() {
+                    snapshot.byte_len += text.utf8_len() as usize;
+                    snapshot.unicode_len += text.unicode_len() as usize;
+                    snapshot.utf16_len += text.utf16_len() as usize;
+                    snapshot.runs.push(text.bytes().clone());
+                }
+            }
+        });
+        snapshot
+    }
+
     /// Experimental correctness-only diagnostic of actual live text backing.
     /// Reads metadata in either loader elements or the live tree without
     /// resolving extents, decoding the tree, scanning history or copying text.

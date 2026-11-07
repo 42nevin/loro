@@ -2972,6 +2972,17 @@ impl TextHandler {
         }
     }
 
+    /// Snapshot current live storage under one state lock. No callback executes
+    /// under the lock and no history is read. Detached text has no native basis.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub fn shared_text_snapshot(&self) -> Option<crate::text_slice::TextStateSnapshot> {
+        match &self.inner {
+            MaybeDetached::Detached(_) => None,
+            MaybeDetached::Attached(a) => Some(a.with_state(|state|
+                state.as_richtext_state().unwrap().shared_text_snapshot(self.id()))),
+        }
+    }
+
     /// Read the live text of this container as ordered runs of contiguous
     /// native item IDs.
     ///

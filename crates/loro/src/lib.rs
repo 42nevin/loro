@@ -2431,6 +2431,8 @@ pub use loro_internal::native_wire_recipe;
 pub use loro_internal::native_text_observation;
 pub use loro_internal::text_slice::{ExtentResolver, TextBackingInfo, TextBackingSnapshot, TextSlice};
 #[cfg(feature = "shared_arena_experiment")]
+pub use loro_internal::text_slice::TextStateSnapshot;
+#[cfg(feature = "shared_arena_experiment")]
 pub use loro_internal::text_slice::{reset_text_copy_metrics, text_copy_metrics, TextCopyCount};
 #[cfg(feature = "shared_arena_experiment")]
 impl LoroDoc {
@@ -2901,6 +2903,13 @@ impl LoroText {
     /// ```
     pub fn get_cursor(&self, pos: usize, side: Side) -> Option<Cursor> {
         self.handler.get_cursor(pos, side)
+    }
+
+    /// Retain a versioned immutable view of current text chunks. This does not
+    /// scan history. The container-local version is not an application cut.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub fn shared_text_snapshot(&self) -> Option<TextStateSnapshot> {
+        self.handler.shared_text_snapshot()
     }
 
     /// Read the live text as ordered runs of contiguous native item IDs.

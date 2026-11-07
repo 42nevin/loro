@@ -98,6 +98,20 @@ pub struct TextBackingSnapshot {
     pub unloaded_containers_unknown: bool,
 }
 
+/// Immutable view of one attached container's current state, not an accepted
+/// application cut. The local version is scoped to this container instance;
+/// consumers must carry their own document/cut proof across sessions.
+#[cfg(feature = "shared_arena_experiment")]
+#[derive(Clone, Debug)]
+pub struct TextStateSnapshot {
+    pub container: loro_common::ContainerID,
+    pub version: usize,
+    pub runs: Vec<TextSlice>,
+    pub byte_len: usize,
+    pub unicode_len: usize,
+    pub utf16_len: usize,
+}
+
 /// Immutable metadata for a concatenation of extents from one resolver.
 /// Fields are private: all parts are nonempty and the checked total is cached.
 #[cfg(feature = "shared_arena_experiment")]
