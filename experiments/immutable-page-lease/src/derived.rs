@@ -42,6 +42,15 @@ impl Store {
         self.require_derived_v1()?;
         self.read_record(OBJECT_ROOT,OBJECT_MAGIC,id)
     }
+    /// Includes unreachable objects from interrupted publications. Never reuse IDs.
+    pub fn derived_next_object_id(&self)->Result<u64> {
+        self.require_derived_v1()?;
+        self.owner.counts.reads.fetch_add(1,Ordering::SeqCst);
+        let txn=sanakirja::Env::txn_begin(&self.owner.env)?;
+        let Some(db)=txn.root_db::<u64,u64,sanakirja::btree::page::Page<u64,u64>>(OBJECT_ROOT) else {return Ok(0)};
+        let mut iter=sanakirja::btree::rev_iter(&txn,&db,None)?;
+        match iter.next() {Some(entry)=>entry?.0.checked_add(1).ok_or_else(||anyhow::anyhow!("derived object identity exhausted")),None=>Ok(0)}
+    }
     pub fn derived_head(&self)->Result<Option<(u64,Vec<u8>)>> {
         self.require_derived_v1()?;
         let id={

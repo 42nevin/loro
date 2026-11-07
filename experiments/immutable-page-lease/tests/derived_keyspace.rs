@@ -38,3 +38,15 @@ fn derived_schema_refuses_legacy_without_mutating_file() {
     let store=unsafe {Store::open(&path).unwrap()};assert!(store.require_derived_v1().is_err());drop(store);
     assert_eq!(before,std::fs::read(&path).unwrap());
 }
+
+#[test]
+fn abandoned_objects_do_not_reuse_ids_or_block_next_head() {
+    let dir=tempfile::tempdir().unwrap();let mut store=unsafe {Store::open(&dir.path().join("store")).unwrap()};
+    store.init_derived_v1().unwrap();assert_eq!(store.derived_next_object_id().unwrap(),0);
+    store.derived_put(0,b"old").unwrap();store.derived_publish_head(0,b"old-head",&[0]).unwrap();
+    store.derived_put(1,b"interrupted-head-orphan").unwrap();
+    assert_eq!(store.derived_next_object_id().unwrap(),2);
+    store.derived_put(2,b"next").unwrap();store.derived_publish_head(1,b"next-head",&[2]).unwrap();
+    assert_eq!(store.derived_head().unwrap(),Some((1,b"next-head".to_vec())));
+    assert_eq!(store.derived_get(0).unwrap(),Some(b"old".to_vec()));
+}
