@@ -124,3 +124,5 @@ coverage under `crates/fuzz` and ask before running long fuzz targets.
   [../../context/native-multi-extent-op.md](../../context/native-multi-extent-op.md).
 - Mixed JSON structural/style import with original immutable text operands:
   [../../context/bound-text-import-experiment.md](../../context/bound-text-import-experiment.md).
+
+- Direct owned extent views, diagnostics and single-page limits: [../../context/s-direct-page-ownership.md](../../context/s-direct-page-ownership.md).

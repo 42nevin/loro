@@ -1080,6 +1080,24 @@ impl LoroDoc {
         })
     }
 
+    /// Diagnostic clones of actual retained OpLog operands. This walks history;
+    /// it is not an edit fast path and does not reconstruct strings or wire bytes.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub fn inspect_text_op_handles(&self) -> Vec<crate::text_slice::TextSlice> {
+        self.with_barrier(|| {
+            let oplog = self.oplog.lock();
+            let mut result = Vec::new();
+            for change in oplog.iter_changes_peer_by_peer(&VersionVector::default(), oplog.vv()) {
+                for op in change.ops.iter() {
+                    if let InnerContent::List(InnerListOp::InsertText { slice, .. }) = &op.content {
+                        result.push(slice.clone());
+                    }
+                }
+            }
+            result
+        })
+    }
+
     /// Correctness-only metadata scan. Unloaded containers are not decoded.
     #[cfg(feature = "shared_arena_experiment")]
     pub fn inspect_text_backings(&self) -> crate::text_slice::TextBackingSnapshot {

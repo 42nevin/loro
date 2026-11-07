@@ -2434,6 +2434,8 @@ pub use loro_internal::text_slice::{ExtentResolver, TextBackingInfo, TextBacking
 pub use loro_internal::text_slice::{reset_text_copy_metrics, text_copy_metrics, TextCopyCount};
 #[cfg(feature = "shared_arena_experiment")]
 impl LoroDoc {
+    /// Clone actual retained insertion handles for ownership qualification.
+    pub fn inspect_text_op_handles(&self) -> Vec<TextSlice> { self.doc.inspect_text_op_handles() }
     /// Correctness-only scan of actual retained insertion operands, outside timings.
     pub fn inspect_text_op_backings(&self) -> Vec<TextBackingInfo> {self.doc.inspect_text_op_backings()}
     /// Correctness-only backing metadata for arena, OpLog and loaded live state.

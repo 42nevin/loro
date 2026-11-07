@@ -92,3 +92,32 @@ it exposed a logical ID lookup bug because Sanakirja get is a lower-bound lookup
 not an exact match. The wrapper now compares the returned key explicitly. The local
 vendored `append-only-bytes` patch must remain the same crate instance used by
 Loro and this prototype; otherwise the allocator return types differ.
+
+## S-direct extension (2026-11-07)
+
+The current source additionally exposes `insert_bound`, `bind`, `publish`,
+`published` and `published_ids`. Private payload descriptors and public record
+metadata share one environment. Store identity persists across reopen. A public
+record is installed atomically only after every descriptor matches an existing
+private page; duplicate public keys are explicitly rejected. Application receipt
+and semantic verification remain the caller's responsibility. Metadata blobs are
+also retained forever. Initialization adds one store-identity commit; each edit
+uses a private commit and then a public commit, counted separately.
+
+The generated allocator now returns `TextSlice::Direct`, retaining logical extent
+identity alongside the immutable owner. Diagnostic actual OpLog handles confirm
+the original allocation address. The original snapshot-based test remains a
+legacy test, not proof of direct fresh-process Loro recovery. Application tests
+must bind records from Sanakirja, not import a snapshot and call that direct.
+
+`Store::metrics` records actual extent resolutions, read transactions, private
+commits, public commits and initialized page bytes. Compare snapshots around the
+live accessor loop; the counters are shared by all threads using the owner.
+`TextSlice` separately records explicit payload copies by consumer. Counters do
+not claim to cover every allocator or wire serialization operation.
+
+The wrapper now retains cooperative path and inode exclusion through all leases.
+On Linux the inode lock is an OFD record lock, separate from Sanakirja's own flock
+write lock. Existing aliases are rejected before mapping. Arbitrary external
+writers and file replacement are still excluded by the unsafe caller contract.
+See `context/s-direct-page-ownership.md` for the pinned engine source audit.

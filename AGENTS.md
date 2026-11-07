@@ -154,3 +154,5 @@ linked issues or traces when relevant.
   [context/native-multi-extent-op.md](context/native-multi-extent-op.md).
 - Feature-gated existing-JSON import with original text extent binding, authentication
   boundary and copy accounting: [context/bound-text-import-experiment.md](context/bound-text-import-experiment.md).
+
+- Direct owned extent views and Sanakirja lease/publication qualification: [context/s-direct-page-ownership.md](context/s-direct-page-ownership.md).

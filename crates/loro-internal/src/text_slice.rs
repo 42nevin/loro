@@ -1,4 +1,4 @@
-//! Text payloads may be native bytes or logical extents. Extents never cache bytes.
+//! Text payloads may be native bytes, owned immutable extents, or logical extents.
 use append_only_bytes::BytesSlice;
 use std::{
     borrow::Cow,
@@ -115,6 +115,9 @@ impl fmt::Debug for ExtentSequence {
 #[derive(Clone)]
 pub enum TextSlice {
     Native(BytesSlice),
+    /// A checked immutable owner, not an ID lookup cache. The owner keeps the
+    /// backing allocation alive; slicing preserves its identity and range.
+    Direct { bytes: BytesSlice, extent: u64 },
     #[cfg(feature = "shared_arena_experiment")]
     ExtentSequence(Arc<ExtentSequence>),
     Extent {
@@ -127,6 +130,7 @@ impl fmt::Debug for TextSlice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Native(x) => x.fmt(f),
+            Self::Direct { bytes, extent } => f.debug_struct("Direct").field("extent", extent).field("range", &(bytes.start()..bytes.end())).finish(),
             #[cfg(feature = "shared_arena_experiment")]
             Self::ExtentSequence(x) => x.fmt(f),
             Self::Extent { extent, range, .. } => f
@@ -160,6 +164,7 @@ impl TextSlice {
     pub fn backing_info(&self) -> TextBackingInfo {
         match self {
             Self::Native(x) => TextBackingInfo {kind:"native",extent:None,range:x.start()..x.end()},
+            Self::Direct { bytes, extent } => TextBackingInfo {kind:"direct_extent",extent:Some(*extent),range:bytes.start()..bytes.end()},
             #[cfg(feature = "shared_arena_experiment")]
             Self::ExtentSequence(x) => TextBackingInfo {kind:"extent_sequence",extent:None,range:0..x.byte_len},
             Self::Extent{extent,range,..} => TextBackingInfo {kind:"extent",extent:Some(*extent),range:range.clone()},
@@ -226,6 +231,17 @@ impl TextSlice {
         Ok(output)
     }
 
+    /// Bind a durable logical identity to a checked immutable owner. The caller
+    /// must authenticate identity-to-owner correspondence before publication.
+    /// No storage resolver or transaction is entered on subsequent reads.
+    pub fn direct_extent(extent: u64, bytes: BytesSlice) -> io::Result<Self> {
+        std::str::from_utf8(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        Ok(Self::Direct { bytes, extent })
+    }
+    /// Borrow actual owner bytes, if this is a direct/native payload.
+    pub fn direct_bytes(&self) -> Option<&[u8]> {
+        match self { Self::Native(x) | Self::Direct { bytes: x, .. } => Some(x), _ => None }
+    }
     pub fn extent(resolver: Arc<dyn ExtentResolver>, extent: u64, range: Range<usize>) -> Self {
         assert!(range.start <= range.end);
         Self::Extent {
@@ -242,7 +258,7 @@ impl TextSlice {
     }
     pub fn len(&self) -> usize {
         match self {
-            Self::Native(x) => x.len(),
+            Self::Native(x) | Self::Direct { bytes: x, .. } => x.len(),
             #[cfg(feature = "shared_arena_experiment")]
             Self::ExtentSequence(x) => x.byte_len,
             Self::Extent { range, .. } => range.len(),
@@ -253,7 +269,7 @@ impl TextSlice {
     }
     pub fn start(&self) -> usize {
         match self {
-            Self::Native(x) => x.start(),
+            Self::Native(x) | Self::Direct { bytes: x, .. } => x.start(),
             #[cfg(feature = "shared_arena_experiment")]
             Self::ExtentSequence(_) => 0,
             Self::Extent { range, .. } => range.start,
@@ -263,7 +279,7 @@ impl TextSlice {
         self.start() + self.len()
     }
     pub fn is_extent(&self) -> bool {
-        self.extent_resolver().is_some()
+        matches!(self, Self::Direct { .. }) || self.extent_resolver().is_some()
     }
     pub fn try_with_bytes<R>(
         &self,
@@ -271,7 +287,7 @@ impl TextSlice {
         f: impl FnOnce(&[u8]) -> R,
     ) -> io::Result<R> {
         match self {
-            Self::Native(x) => Ok(f(x)),
+            Self::Native(x) | Self::Direct { bytes: x, .. } => Ok(f(x)),
             #[cfg(feature = "shared_arena_experiment")]
             Self::ExtentSequence(sequence) => {
                 let joined = Self::join_extents(sequence, consumer)?;
@@ -318,7 +334,7 @@ impl TextSlice {
     }
     pub fn materialize(&self, consumer: &'static str) -> Cow<'_, [u8]> {
         match self {
-            Self::Native(x) => Cow::Borrowed(x),
+            Self::Native(x) | Self::Direct { bytes: x, .. } => Cow::Borrowed(x),
             #[cfg(feature = "shared_arena_experiment")]
             Self::ExtentSequence(sequence) => Cow::Owned(Self::join_extents(sequence, consumer)
                 .expect("text extent resolution failed")),
@@ -362,7 +378,7 @@ impl TextSlice {
     }
     pub fn str_range(&self, range: Range<usize>, consumer: &'static str) -> Cow<'_, str> {
         match self {
-            Self::Native(x) => {
+            Self::Native(x) | Self::Direct { bytes: x, .. } => {
                 Cow::Borrowed(std::str::from_utf8(&x[range]).expect("valid text range"))
             }
             _ => Cow::Owned(self.slice_clone(range).as_str_for(consumer).into_owned()),
@@ -380,9 +396,9 @@ impl TextSlice {
     /// Materialize one owned output buffer and count the copy for either backing.
     pub fn to_vec_for(&self, consumer: &'static str) -> Vec<u8> {
         match self {
-            Self::Native(bytes) => {
+            Self::Native(bytes) | Self::Direct { bytes, .. } => {
                 let output = bytes.to_vec();
-                record_copy(consumer, output.len(), false);
+                record_copy(consumer, output.len(), self.is_extent());
                 output
             }
             _ => self.materialize(consumer).into_owned(),
@@ -402,6 +418,7 @@ impl TextSlice {
         assert!(start <= end && end <= self.len());
         match self {
             Self::Native(x) => Self::Native(x.slice_clone(start..end)),
+            Self::Direct { bytes, extent } => Self::Direct { bytes: bytes.slice_clone(start..end), extent: *extent },
             #[cfg(feature = "shared_arena_experiment")]
             Self::ExtentSequence(sequence) => {
                 if start == 0 && end == sequence.byte_len { return self.clone(); }
@@ -434,6 +451,7 @@ impl TextSlice {
     pub fn ptr_eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Native(a), Self::Native(b)) => a.ptr_eq(b),
+            (Self::Direct { bytes: a, extent: ai }, Self::Direct { bytes: b, extent: bi }) => ai == bi && a.ptr_eq(b),
             #[cfg(feature = "shared_arena_experiment")]
             (Self::ExtentSequence(a), Self::ExtentSequence(b)) => Arc::ptr_eq(a,b),
             (
@@ -475,6 +493,7 @@ impl TextSlice {
         }
         match (self, other) {
             (Self::Native(a), Self::Native(b)) => a.try_merge(b),
+            (Self::Direct { bytes: a, .. }, Self::Direct { bytes: b, .. }) => a.try_merge(b),
             (Self::Extent { range: a, .. }, Self::Extent { range: b, .. }) => {
                 a.end = b.end;
                 Ok(())
@@ -485,7 +504,7 @@ impl TextSlice {
     /// Native-only diagnostic; extent addresses cannot escape their session.
     pub fn as_ptr(&self) -> *const u8 {
         match self {
-            Self::Native(x) => x.as_ptr(),
+            Self::Native(x) | Self::Direct { bytes: x, .. } => x.as_ptr(),
             _ => panic!("logical extent has no persistent pointer"),
         }
     }
@@ -540,6 +559,23 @@ mod tests {
             reads: AtomicUsize::new(0),
             copied: AtomicUsize::new(0),
         })
+    }
+    #[test]
+    fn direct_owner_preserves_identity_and_borrowed_ranges() {
+        let bytes = BytesSlice::from_bytes("a玉z".as_bytes());
+        let ptr = bytes.as_ptr();
+        let text = TextSlice::direct_extent(77, bytes).unwrap();
+        assert_eq!(text.direct_bytes().unwrap().as_ptr(), ptr);
+        assert!(matches!(text.materialize("direct.test"), Cow::Borrowed(_)));
+        let left = text.slice_clone(..1);
+        let right = text.slice_clone(1..);
+        assert_eq!(right.backing_info().range, 1..5);
+        assert_eq!(right.backing_info().extent, Some(77));
+        assert_eq!(right.direct_bytes().unwrap(), "玉z".as_bytes());
+        let mut joined = left; joined.try_merge(&right).unwrap();
+        assert_eq!(joined.direct_bytes().unwrap().as_ptr(), ptr);
+        assert_eq!(joined, text);
+        assert!(TextSlice::direct_extent(77, BytesSlice::from_bytes(&[255])).is_err());
     }
     #[test]
     fn logical_handle_slicing_is_metadata_only_and_cross_store_equality_is_counted() {
