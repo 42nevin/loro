@@ -305,8 +305,12 @@ impl Store {
         for descriptor in extents {
             self.bind(descriptor)?;
         }
+        self.publish_record(1,RECORD_MAGIC,record_id,metadata)
+    }
+    fn publish_record(&mut self,root:usize,magic:u64,record_id:u64,metadata:&[u8])->Result<()> {
+        ensure!(metadata.len()<=1024*1024*1024,"record exceeds experiment limit");
         let mut txn = sanakirja::Env::mut_txn_begin(&self.owner.env)?;
-        let mut db: sanakirja::btree::Db<u64, u64> = match txn.root_db(1) {
+        let mut db: sanakirja::btree::Db<u64, u64> = match txn.root_db(root) {
             Some(db) => db,
             None => unsafe { sanakirja::btree::create_db(&mut txn)? },
         };
@@ -330,7 +334,7 @@ impl Store {
                 .counts
                 .initialized
                 .fetch_add(PAGE as u64, Ordering::SeqCst);
-            raw[8..16].copy_from_slice(&RECORD_MAGIC.to_le_bytes());
+            raw[8..16].copy_from_slice(&magic.to_le_bytes());
             raw[16..24].copy_from_slice(&(metadata.len() as u64).to_le_bytes());
             raw[24..32].copy_from_slice(&pages.get(i + 1).map_or(0, |p| p.0.offset).to_le_bytes());
             raw[32..40].copy_from_slice(&record_id.to_le_bytes());
@@ -339,15 +343,18 @@ impl Store {
             raw[40..40 + hi - lo].copy_from_slice(&metadata[lo..hi]);
         }
         sanakirja::btree::put(&mut txn, &mut db, &record_id, &pages[0].0.offset)?;
-        txn.set_root(1, db.db.into());
+        txn.set_root(root, db.db.into());
         txn.commit()?;
         self.owner.counts.public.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
     pub fn published(&self, record_id: u64) -> Result<Option<Vec<u8>>> {
+        self.read_record(1,RECORD_MAGIC,record_id)
+    }
+    fn read_record(&self,root:usize,magic:u64,record_id:u64)->Result<Option<Vec<u8>>> {
         self.owner.counts.reads.fetch_add(1, Ordering::SeqCst);
         let txn = sanakirja::Env::txn_begin(&self.owner.env)?;
-        let Some(db) = txn.root_db::<u64, u64, sanakirja::btree::page::Page<u64, u64>>(1) else {
+        let Some(db) = txn.root_db::<u64, u64, sanakirja::btree::page::Page<u64, u64>>(root) else {
             return Ok(None);
         };
         let Some((key, offset)) = sanakirja::btree::get(&txn, &db, &record_id, None)? else {
@@ -365,7 +372,7 @@ impl Store {
             let page = unsafe { txn.load_page(offset)? };
             let raw = unsafe { std::slice::from_raw_parts(page.data, PAGE) };
             ensure!(
-                u64::from_le_bytes(raw[8..16].try_into()?) == RECORD_MAGIC,
+                u64::from_le_bytes(raw[8..16].try_into()?) == magic,
                 "invalid record magic"
             );
             ensure!(
@@ -454,3 +461,6 @@ mod tests {
         assert_eq!(&*bytes, "玉".as_bytes());
     }
 }
+
+#[path="derived.rs"]
+mod derived;
