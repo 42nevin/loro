@@ -24,6 +24,15 @@ use loro_common::{
 use rle::{HasLength, RleVec, Sliceable};
 use std::sync::Arc;
 
+/// A JSON insertion's original native operand, without a temporary text String.
+#[derive(Clone, Debug)]
+pub struct NativeTextSlice {
+    pub op: ID,
+    pub container: ContainerID,
+    pub unicode_len: u32,
+    pub slice: TextSlice,
+}
+
 const SCHEMA_VERSION: u8 = 1;
 
 fn refine_vv(vv: &VersionVector, oplog: &OpLog) -> VersionVector {
@@ -74,7 +83,13 @@ pub(crate) fn export_json<'a, 'c: 'a>(
     }
 }
 
-pub(crate) fn export_json_in_id_span(oplog: &OpLog, mut id_span: IdSpan) -> Vec<json::JsonChange> {
+pub(crate) fn export_json_in_id_span(oplog: &OpLog, id_span: IdSpan) -> Vec<json::JsonChange> {
+    export_json_in_id_span_mode(oplog, id_span, None)
+}
+
+pub(crate) fn export_json_in_id_span_mode(
+    oplog: &OpLog, mut id_span: IdSpan, text: Option<&mut Vec<NativeTextSlice>>,
+) -> Vec<json::JsonChange> {
     id_span.normalize_();
     if id_span.counter.end <= 0 {
         return vec![];
@@ -115,7 +130,19 @@ pub(crate) fn export_json_in_id_span(oplog: &OpLog, mut id_span: IdSpan) -> Vec<
         id_span.counter.start = ctr_end;
     }
 
-    encode_changes(&diff_changes, &oplog.arena, None)
+    encode_changes_mode(&diff_changes, &oplog.arena, None, text)
+}
+
+#[cfg(feature = "shared_arena_experiment")]
+pub(crate) fn export_json_with_text_slices(
+    oplog: &OpLog, start: &VersionVector, end: &VersionVector,
+) -> (JsonSchema, Vec<NativeTextSlice>) {
+    let start = refine_vv(start, oplog);
+    let end = refine_vv(end, oplog);
+    let mut text = Vec::new();
+    let changes = encode_changes_mode(&init_encode(oplog, &start, &end), &oplog.arena, None, Some(&mut text));
+    (JsonSchema { changes, schema_version: SCHEMA_VERSION, peers: None,
+        start_version: oplog.dag.vv_to_frontiers(&start) }, text)
 }
 
 pub(crate) fn decode_json_changes(
@@ -269,7 +296,16 @@ pub(crate) fn encode_change_to_json(change: ChangeRef<'_>, arena: &SharedArena) 
 fn encode_changes(
     diff_changes: &[Either<BlockChangeRef, Change>],
     arena: &SharedArena,
+    peer_register: Option<&mut ValueRegister<PeerID>>,
+) -> Vec<json::JsonChange> {
+    encode_changes_mode(diff_changes, arena, peer_register, None)
+}
+
+fn encode_changes_mode(
+    diff_changes: &[Either<BlockChangeRef, Change>],
+    arena: &SharedArena,
     mut peer_register: Option<&mut ValueRegister<PeerID>>,
+    mut text: Option<&mut Vec<NativeTextSlice>>,
 ) -> Vec<json::JsonChange> {
     let mut changes = Vec::with_capacity(diff_changes.len());
     for change in diff_changes.iter() {
@@ -277,10 +313,11 @@ fn encode_changes(
             Either::Left(c) => c,
             Either::Right(c) => c,
         };
-        let c = encode_change(
+        let c = encode_change_mode(
             ChangeRef::from_change(change),
             arena,
             peer_register.as_deref_mut(),
+            text.as_deref_mut(),
         );
         changes.push(c);
     }
@@ -290,7 +327,16 @@ fn encode_changes(
 pub(crate) fn encode_change(
     change: ChangeRef<'_, Op>,
     arena: &SharedArena,
+    peer_register: Option<&mut ValueRegister<PeerID>>,
+) -> JsonChange {
+    encode_change_mode(change, arena, peer_register, None)
+}
+
+pub(crate) fn encode_change_mode(
+    change: ChangeRef<'_, Op>,
+    arena: &SharedArena,
     mut peer_register: Option<&mut ValueRegister<PeerID>>,
+    mut text_slices: Option<&mut Vec<NativeTextSlice>>,
 ) -> JsonChange {
     let mut ops = Vec::with_capacity(change.ops.len());
     for Op {
@@ -400,12 +446,18 @@ pub(crate) fn encode_change(
                     InnerListOp::InsertText {
                         slice,
                         unicode_start: _,
-                        unicode_len: _,
+                        unicode_len,
                         pos,
                     } => {
-                        let text =
-                            String::from_utf8(slice.to_vec_for("oracle.json_export"))
-                                .unwrap();
+                        let text = if let Some(slots) = text_slices.as_deref_mut() {
+                            slots.push(NativeTextSlice {
+                                op: ID::new(change.id.peer, *counter), container: container.clone(),
+                                unicode_len: *unicode_len, slice: slice.clone(),
+                            });
+                            String::new()
+                        } else {
+                            String::from_utf8(slice.to_vec_for("oracle.json_export")).unwrap()
+                        };
                         json::TextOp::Insert { pos: *pos, text }
                     }
                     InnerListOp::Delete(DeleteSpanWithId {
@@ -550,6 +602,18 @@ fn decode_changes(json: JsonSchema, arena: &SharedArena) -> LoroResult<Vec<Chang
 pub(crate) fn decode_changes_with_text_allocator(
     json: JsonSchema,
     arena: &SharedArena,
+    alloc_text: impl FnMut(ID, &ContainerID, &str) -> LoroResult<(TextSlice, StrAllocResult)>,
+) -> LoroResult<Vec<Change>> {
+    decode_changes_with_referenced_text(json, arena, &std::collections::BTreeMap::new(), alloc_text)
+}
+
+// Length overrides are supplied only after the reference importer has bound
+// each empty insertion slot to a unique authenticated descriptor. All grammar,
+// ID and causal-counter validation remains in the ordinary decoder.
+pub(crate) fn decode_changes_with_referenced_text(
+    json: JsonSchema,
+    arena: &SharedArena,
+    lengths: &std::collections::BTreeMap<ID, usize>,
     mut alloc_text: impl FnMut(ID, &ContainerID, &str) -> LoroResult<(TextSlice, StrAllocResult)>,
 ) -> LoroResult<Vec<Change>> {
     let JsonSchema {
@@ -589,7 +653,10 @@ pub(crate) fn decode_changes_with_text_allocator(
         }
 
         for op in json_ops {
-            let next_counter = validate_json_op_counter(expected_counter, &op)?;
+            let next_counter = match lengths.get(&ID::new(id.peer, op.counter)) {
+                Some(&len) => validate_json_op_counter_with_len(expected_counter, &op, len)?,
+                None => validate_json_op_counter(expected_counter, &op)?,
+            };
             let op = decode_op(op, arena, &peers, id.peer, &mut alloc_text)?;
             validate_json_op_created_container_ids(id.peer, &op, arena)?;
             ops.push(op);
@@ -659,7 +726,10 @@ fn validate_json_container_id_counter(id: &ContainerID, name: &str) -> LoroResul
 }
 
 fn validate_json_op_counter(expected_counter: Counter, op: &json::JsonOp) -> LoroResult<Counter> {
-    let op_len = op.content.op_len();
+    validate_json_op_counter_with_len(expected_counter, op, op.content.op_len())
+}
+
+fn validate_json_op_counter_with_len(expected_counter: Counter, op: &json::JsonOp, op_len: usize) -> LoroResult<Counter> {
     if op_len == 0 {
         return Err(LoroError::DecodeError(
             "invalid json op counter: op length must be greater than zero".into(),

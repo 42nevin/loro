@@ -630,6 +630,20 @@ impl SharedArena {
         })
     }
 
+    /// Validate/index borrowed physical text ranges before acquiring the arena
+    /// lock. The temporary allocation contains sparse scalar counts, not bytes.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(crate) fn alloc_referenced_text_slice(&self, slice: BytesSlice, unicode_len: u32) -> std::io::Result<StrAllocResult> {
+        let index = str_arena::ValidatedTextIndex::prepare(&slice)?;
+        if index.unicode_len() != unicode_len as usize {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "reference Unicode length mismatch"));
+        }
+        let mut arena = self.inner.str.lock();
+        let start = arena.len_unicode();
+        arena.alloc_sealed_with_index(slice, index)?;
+        Ok(StrAllocResult { start, end: arena.len_unicode() })
+    }
+
     /// Adopt backing whose complete bytes the bound importer already compared
     /// with `text`. Index the authenticated input, without another resolver call
     /// under the poisonable string-arena lock. This does not copy payload bytes.

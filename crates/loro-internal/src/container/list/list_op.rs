@@ -7,7 +7,6 @@ use rle::{HasLength, Mergable, Sliceable};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    container::richtext::richtext_state::unicode_to_utf8_index,
     container::richtext::tracker::UNKNOWN_SPAN_LEN,
     container::richtext::TextStyleInfoFlag,
     op::{ListSlice, SliceRange},
@@ -650,29 +649,28 @@ impl Sliceable for InnerListOp {
                 pos,
             } => InnerListOp::InsertText {
                 slice: {
-                    slice.with_str("op.unicode_slice", |s| {
-                        let total_unicode_len = *unicode_len as usize;
-                        let total_bytes_len = slice.len();
-                        let (from_byte, to_byte) = if total_bytes_len == total_unicode_len {
-                            // ASCII fast path: unicode index equals byte offset.
-                            (from, to)
-                        } else {
-                            let from_byte = if from == 0 {
-                                0
-                            } else {
-                                unicode_to_utf8_index(s, from)
-                                    .expect("unicode index should be valid")
-                            };
-                            let to_byte = if to == total_unicode_len {
-                                total_bytes_len
-                            } else {
-                                unicode_to_utf8_index(s, to).expect("unicode index should be valid")
-                            };
-                            (from_byte, to_byte)
-                        };
-
-                        slice.slice(from_byte, to_byte)
-                    })
+                    let total_unicode_len = *unicode_len as usize;
+                    assert!(from <= to && to <= total_unicode_len);
+                    if slice.len() == total_unicode_len {
+                        slice.slice(from, to)
+                    } else if from == 0 && to == total_unicode_len {
+                        slice.clone()
+                    } else {
+                        let mut unicode = 0usize;
+                        let mut byte = 0usize;
+                        let mut from_byte = None;
+                        let mut to_byte = None;
+                        slice.try_for_each_char("op.unicode_slice", |c| {
+                            if unicode == from { from_byte = Some(byte); }
+                            if unicode == to { to_byte = Some(byte); }
+                            byte += c.len_utf8();
+                            unicode += 1;
+                            Ok(())
+                        }).expect("validated native insertion text");
+                        if unicode == from { from_byte = Some(byte); }
+                        if unicode == to { to_byte = Some(byte); }
+                        slice.slice(from_byte.expect("valid Unicode start"), to_byte.expect("valid Unicode end"))
+                    }
                 },
                 unicode_start: *unicode_start + from as u32,
                 unicode_len: (to - from) as u32,

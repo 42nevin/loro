@@ -1041,6 +1041,26 @@ impl LoroDoc {
         })
     }
 
+    /// Import authenticated typed metadata whose text insertions are represented
+    /// exclusively by immutable extent references, without temporary Strings.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub fn import_json_updates_with_text_references(
+        &self,
+        json: JsonSchema,
+        references: &[crate::native_wire_recipe::NativeTextReference],
+        ledger: &dyn crate::native_wire_recipe::NativeWireLedger,
+    ) -> LoroResult<ImportStatus> {
+        self.with_barrier(|| {
+            let result = self.import_changes_and_apply_delta_to_state_if_needed(
+                |oplog| crate::bound_text_import::decode_references(json, &oplog.arena, references, ledger),
+                ImportedValues::Lossy,
+                Default::default(),
+            );
+            self.emit_events();
+            result
+        })
+    }
+
     /// Restore text history directly from typed immutable-extent descriptors.
     /// This takes the native change-import path, preserving original atom IDs and
     /// dependencies, without reconstructing JSON text or a wire snapshot.
@@ -1133,6 +1153,36 @@ impl LoroDoc {
                 with_peer_compression,
             )
         })
+    }
+
+    #[cfg(feature = "shared_arena_experiment")]
+    pub fn export_json_updates_with_text_slices(
+        &self, start_vv: &VersionVector, end_vv: &VersionVector,
+    ) -> (JsonSchema, Vec<crate::native_wire_recipe::NativeTextSlice>) {
+        self.with_barrier(|| {
+            let oplog = self.oplog.lock();
+            let mut start = start_vv.clone();
+            for (&peer, &counter) in oplog.dag.shallow_since_vv().iter() {
+                if start.get(&peer).copied().unwrap_or(0) < counter {
+                    start.extend_to_include_end_id(ID::new(peer, counter));
+                }
+            }
+            crate::encoding::json_schema::export_json_with_text_slices(&oplog, &start, end_vv)
+        })
+    }
+
+    #[cfg(feature = "shared_arena_experiment")]
+    pub fn export_json_in_id_span_with_text_slices(
+        &self, id_span: IdSpan,
+    ) -> (Vec<JsonChange>, Vec<crate::native_wire_recipe::NativeTextSlice>) {
+        let oplog = self.oplog.lock();
+        let mut text = Vec::new();
+        let mut changes = crate::encoding::json_schema::export_json_in_id_span_mode(&oplog, id_span, Some(&mut text));
+        if let Some(uncommit) = oplog.get_uncommitted_change_in_span(id_span) {
+            changes.push(crate::encoding::json_schema::encode_change_mode(
+                ChangeRef::from_change(&uncommit), &self.arena, None, Some(&mut text)));
+        }
+        (changes, text)
     }
 
     pub fn export_json_in_id_span(&self, id_span: IdSpan) -> Vec<JsonChange> {

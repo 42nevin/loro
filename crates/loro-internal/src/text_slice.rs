@@ -147,12 +147,7 @@ impl PartialEq for TextSlice {
         if self.ptr_eq(other) && self.start() == other.start() && self.end() == other.end() {
             return true;
         }
-        if self.extent_resolver().zip(other.extent_resolver()).is_some_and(|(a,b)| !Arc::ptr_eq(a,b)) {
-            // Release the first store's view before entering another store.
-            let left = self.materialize("text.equal.cross_store");
-            return other.with_bytes("text.equal", |right| left.as_ref() == right);
-        }
-        self.with_bytes("text.equal", |a| other.with_bytes("text.equal", |b| a == b))
+        self.try_bytes_equal(other).expect("text extent comparison failed")
     }
 }
 impl Eq for TextSlice {}
@@ -265,6 +260,92 @@ impl TextSlice {
     pub fn is_extent(&self) -> bool {
         self.extent_resolver().is_some()
     }
+    /// Visit physical byte ranges in order without joining composite extents.
+    /// Each view expires before the next resolver call. A consumer may reject a
+    /// chunk; callers must discard partial results on any error, as with a read.
+    pub fn try_for_each_chunk(
+        &self,
+        consumer: &'static str,
+        mut visit: impl FnMut(&[u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        #[cfg(feature = "shared_arena_experiment")]
+        if let Self::ExtentSequence(sequence) = self {
+            for (extent, range) in &sequence.parts {
+                Self::extent(sequence.resolver.clone(), *extent, range.clone())
+                    .try_with_bytes(consumer, &mut visit)??;
+            }
+            return Ok(());
+        }
+        self.try_with_bytes(consumer, visit)?
+    }
+
+    /// Decode one scalar at a time, retaining at most four bytes when UTF-8
+    /// crosses physical ranges. Invalid, overlong and truncated input is rejected.
+    pub fn try_for_each_char(
+        &self,
+        consumer: &'static str,
+        mut visit: impl FnMut(char) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let mut scalar = [0u8; 4];
+        let mut used = 0usize;
+        let mut width = 0usize;
+        let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8 extent text");
+        self.try_for_each_chunk(consumer, |bytes| {
+            for &byte in bytes {
+                if used == 0 {
+                    width = match byte {
+                        0..=0x7f => 1,
+                        0xc2..=0xdf => 2,
+                        0xe0..=0xef => 3,
+                        0xf0..=0xf4 => 4,
+                        _ => return Err(invalid()),
+                    };
+                }
+                scalar[used] = byte;
+                used += 1;
+                if used == width {
+                    let text = std::str::from_utf8(&scalar[..used]).map_err(|_| invalid())?;
+                    visit(text.chars().next().ok_or_else(invalid)?)?;
+                    used = 0;
+                }
+            }
+            Ok(())
+        })?;
+        if used != 0 { return Err(invalid()); }
+        Ok(())
+    }
+
+    /// Compare independently owned operands without nesting resolver guards or
+    /// allocating a payload-sized buffer. The fixed stack copy is explicitly
+    /// counted; all RHS views are borrowed after the LHS guard has ended.
+    pub fn try_bytes_equal(&self, other: &Self) -> io::Result<bool> {
+        if self.len() != other.len() { return Ok(false); }
+        let mut buffer = [0u8; 1024];
+        let mut start = 0;
+        while start < self.len() {
+            let end = (start + buffer.len()).min(self.len());
+            let left = self.slice_clone(start..end);
+            let mut filled = 0;
+            let read = left.try_for_each_chunk("text_slice.bounded_compare", |bytes| {
+                buffer[filled..filled + bytes.len()].copy_from_slice(bytes);
+                filled += bytes.len();
+                Ok(())
+            });
+            left.record_materialization("text_slice.bounded_compare", filled);
+            read?;
+            let mut cursor = 0;
+            let mut equal = true;
+            other.slice_clone(start..end).try_for_each_chunk("text_slice.bounded_compare", |bytes| {
+                equal &= buffer[cursor..cursor + bytes.len()] == *bytes;
+                cursor += bytes.len();
+                Ok(())
+            })?;
+            if !equal || cursor != filled { return Ok(false); }
+            start = end;
+        }
+        Ok(true)
+    }
+
     pub fn try_with_bytes<R>(
         &self,
         consumer: &'static str,
@@ -585,6 +666,63 @@ mod tests {
         assert_eq!(counts["oplog.raw_op"].native_bytes, 4);
         assert_eq!(counts["oplog.raw_op"].extent_bytes, 4);
     }
+    #[cfg(feature = "shared_arena_experiment")]
+    #[test]
+    fn chunk_visits_borrow_physical_ranges_without_joining() {
+        let backing = resolver();
+        let mut slice = TextSlice::extent(backing.clone(), 1, 0..2);
+        slice.try_merge(&TextSlice::extent(backing.clone(), 2, 2..4)).unwrap();
+        let mut offset = 0;
+        slice.try_for_each_chunk("test.borrow_chunks", |bytes| {
+            assert_eq!(bytes.as_ptr(), backing.bytes[offset..].as_ptr());
+            assert_eq!(bytes, &backing.bytes[offset..offset + 2]);
+            offset += bytes.len();
+            Ok(())
+        }).unwrap();
+        assert_eq!(offset, 4);
+        assert_eq!(backing.copied.load(Ordering::SeqCst), 0);
+        assert!(slice.try_for_each_chunk("test.stop_chunks", |_| {
+            Err(io::Error::new(io::ErrorKind::InvalidData, "consumer rejected"))
+        }).is_err());
+    }
+
+    #[cfg(feature = "shared_arena_experiment")]
+    #[test]
+    fn scalar_visits_validate_utf8_across_physical_cuts() {
+        for bytes in ["a玉🙂z".as_bytes(), &[0xf0, 0x80, 0x80, 0x80], &[0xed, 0xa0, 0x80], &[0xe7, 0x8e]] {
+            let backing = Arc::new(Resolver { bytes: bytes.to_vec(), reads: AtomicUsize::new(0), copied: AtomicUsize::new(0) });
+            let mut slice = TextSlice::extent(backing.clone(), 1, 0..1);
+            for i in 1..bytes.len() {
+                slice.try_merge(&TextSlice::extent(backing.clone(), i as u64 + 1, i..i+1)).unwrap();
+            }
+            let mut actual = String::new();
+            let result = slice.try_for_each_char("test.scalar", |c| { actual.push(c); Ok(()) });
+            match std::str::from_utf8(bytes) {
+                Ok(expected) => { result.unwrap(); assert_eq!(actual, expected); }
+                Err(_) => assert!(result.is_err()),
+            }
+            assert_eq!(backing.copied.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[cfg(feature = "shared_arena_experiment")]
+    #[test]
+    fn bounded_comparison_handles_different_stores_and_chunk_boundaries() {
+        let a = resolver();
+        let b = resolver();
+        let mut left = TextSlice::extent(a.clone(), 1, 0..1);
+        left.try_merge(&TextSlice::extent(a.clone(), 2, 1..4)).unwrap();
+        let right = TextSlice::extent(b.clone(), 9, 0..4);
+        assert!(left.try_bytes_equal(&right).unwrap());
+        assert!(!left.try_bytes_equal(&right.slice_clone(..3)).unwrap());
+        assert!(!left.try_bytes_equal(&TextSlice::from_bytes(b"abce")).unwrap());
+        assert_eq!(a.copied.load(Ordering::SeqCst), 8);
+        assert_eq!(b.copied.load(Ordering::SeqCst), 0);
+        assert_eq!(left, right);
+        assert_eq!(a.copied.load(Ordering::SeqCst), 12);
+        assert_eq!(b.copied.load(Ordering::SeqCst), 0);
+    }
+
     #[test]
     fn fallible_view_rejects_missing_or_wrong_length_without_calling_consumer() {
         struct Bad;

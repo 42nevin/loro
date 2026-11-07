@@ -2454,6 +2454,36 @@ impl LoroDoc {
         self.doc.import_json_updates_with_text_extents(json, ledger)
     }
 
+    /// Import an authenticated, uncompressed JSON schema with empty TextInsert
+    /// slots and matching immutable extent references. The caller authenticates
+    /// full typed semantics and receipt first. This validates exact descriptors,
+    /// Unicode lengths, grammar and counters, without reconstructing text Strings.
+    /// All insertions require references; no plaintext fallback is admitted.
+    pub fn import_json_updates_with_text_references(
+        &self,
+        json: JsonSchema,
+        references: &[native_wire_recipe::NativeTextReference],
+        ledger: &dyn native_wire_recipe::NativeWireLedger,
+    ) -> LoroResult<ImportStatus> {
+        self.doc.import_json_updates_with_text_references(json, references, ledger)
+    }
+
+    /// Read ordinary uncompressed typed history, retaining original insertion
+    /// operands separately while leaving the corresponding text slots empty.
+    /// Every non-text operand follows the normal JSON exporter unchanged.
+    pub fn export_json_updates_with_text_slices(
+        &self, start: &VersionVector, end: &VersionVector,
+    ) -> (JsonSchema, Vec<native_wire_recipe::NativeTextSlice>) {
+        self.doc.export_json_updates_with_text_slices(start, end)
+    }
+
+    /// Read an operation interval with borrowed original text operands.
+    pub fn export_json_in_id_span_with_text_slices(
+        &self, span: IdSpan,
+    ) -> (Vec<JsonChange>, Vec<native_wire_recipe::NativeTextSlice>) {
+        self.doc.export_json_in_id_span_with_text_slices(span)
+    }
+
     /// Restore typed text operations and their original causal metadata from logical extents.
     /// This experimental path does not reconstruct JSON payloads or a native snapshot.
     pub fn import_extent_descriptors(

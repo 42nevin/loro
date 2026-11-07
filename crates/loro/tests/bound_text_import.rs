@@ -446,3 +446,83 @@ fn bound_import_indexes_verified_text_without_arena_resolver_callbacks() {
         .iter()
         .all(|part| part.kind == "extent"));
 }
+
+#[test]
+fn reference_only_mixed_import_checks_lengths_and_retains_original_parts() {
+    use loro::native_wire_recipe::{NativeExtentRef, NativeTextReference};
+    let (source, mut schema, ledger) = fixture();
+    let mut references = Vec::new();
+    for change in &mut schema.changes {
+        for op in &mut change.ops {
+            if let JsonOpContent::Text(JsonTextOp::Insert { text, .. }) = &mut op.content {
+                references.push(NativeTextReference {
+                    op: ID::new(change.id.peer, op.counter), container: op.container.clone(),
+                    unicode_len: text.chars().count() as u32, byte_len: text.len(),
+                    provenance: ExtentProvenance::OriginalLocal,
+                    extents: ledger.parts.iter().flat_map(TextSlice::backing_parts).map(|p| NativeExtentRef {
+                        extent: p.extent.unwrap(), start: p.range.start, end: p.range.end,
+                    }).collect(),
+                });
+                text.clear();
+            }
+        }
+    }
+    for fault in 0..5 {
+        let dst = LoroDoc::new();
+        let mut bad = references.clone();
+        match fault {
+            0 => bad[0].unicode_len += 1,
+            1 => bad[0].byte_len += 1,
+            2 => bad[0].extents[0].extent += 123,
+            3 => bad.push(bad[0].clone()),
+            4 => bad.clear(),
+            _ => unreachable!(),
+        }
+        assert!(dst.import_json_updates_with_text_references(schema.clone(), &bad, &ledger).is_err());
+        assert!(dst.oplog_vv().is_empty());
+    }
+    let dst = LoroDoc::new();
+    dst.import_json_updates_with_text_references(schema, &references, &ledger).unwrap();
+    assert_eq!(canonical(&dst), canonical(&source));
+    assert_eq!(dst.get_deep_value(), source.get_deep_value());
+    assert!(dst.inspect_text_op_backings().iter().all(|p| p.extent.is_some()));
+}
+
+#[test]
+fn text_slice_export_keeps_original_operands_and_nontext_grammar() {
+    let (source, _, _) = fixture();
+    let expected = canonical(&source);
+    let (mut schema, slices) = source.export_json_updates_with_text_slices(
+        &VersionVector::default(), &source.oplog_vv());
+    assert!(!slices.is_empty());
+    for change in &mut schema.changes {
+        for op in &mut change.ops {
+            if let JsonOpContent::Text(JsonTextOp::Insert { text, .. }) = &mut op.content {
+                assert!(text.is_empty());
+                let slot = slices.iter().find(|s| s.op == ID::new(change.id.peer, op.counter)).unwrap();
+                assert_eq!(slot.container, op.container);
+                assert!(slot.slice.is_extent());
+                slot.slice.try_for_each_char("test.export", |c| { text.push(c); Ok(()) }).unwrap();
+                assert_eq!(text.chars().count(), slot.unicode_len as usize);
+            }
+        }
+    }
+    assert_eq!(serde_json::to_value(schema).unwrap(), expected);
+    for slot in slices {
+        let (_, pieces) = source.export_json_in_id_span_with_text_slices(
+            loro::IdSpan::new(slot.op.peer, slot.op.counter, slot.op.counter + slot.unicode_len as i32));
+        assert_eq!(pieces.len(), 1);
+        assert!(pieces[0].slice.try_bytes_equal(&slot.slice).unwrap());
+        if slot.unicode_len > 2 {
+            loro::reset_text_copy_metrics();
+            let (_, middle) = source.export_json_in_id_span_with_text_slices(loro::IdSpan::new(
+                slot.op.peer, slot.op.counter + 1, slot.op.counter + slot.unicode_len as i32 - 1));
+            let counts = loro::text_copy_metrics();
+            assert!(!counts.contains_key("text_slice.extent_sequence_join"));
+            assert!(!counts.contains_key("oracle.json_export"));
+            assert_eq!(middle.len(), 1);
+            assert_eq!(middle[0].unicode_len, slot.unicode_len - 2);
+            assert!(middle[0].slice.is_extent());
+        }
+    }
+}

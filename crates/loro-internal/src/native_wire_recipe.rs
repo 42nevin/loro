@@ -10,6 +10,7 @@ use crate::{
 };
 use loro_common::{ContainerID, LoroError, LoroResult, ID};
 use serde::{Deserialize, Serialize};
+pub use crate::encoding::json_schema::NativeTextSlice;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExtentProvenance {
@@ -20,6 +21,28 @@ pub enum ExtentProvenance {
 pub struct BoundTextExtents {
     pub provenance: ExtentProvenance,
     pub parts: Vec<TextSlice>,
+}
+
+impl BoundTextExtents {
+    /// Compare original physical ranges with an independent expected operand.
+    /// Byte cursors deliberately permit a scalar to cross a physical range;
+    /// matching a UTF-8 expected operand validates the complete text, not each
+    /// arbitrary storage chunk. No temporary contiguous payload is created.
+    pub fn matches_bytes(&self, expected: &[u8]) -> LoroResult<bool> {
+        let mut offset = 0usize;
+        let mut matches = true;
+        for part in &self.parts {
+            part.try_for_each_chunk("wire_recipe.compare", |bytes| {
+                let end = offset.checked_add(bytes.len()).ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "text length overflow")
+                })?;
+                matches &= expected.get(offset..end) == Some(bytes);
+                offset = end;
+                Ok(())
+            }).map_err(|_| invalid())?;
+        }
+        Ok(matches && offset == expected.len())
+    }
 }
 
 /// Trusted application-owned allocation ledger and correspondence verifier.
@@ -43,6 +66,18 @@ pub struct NativeExtentRef {
     pub extent: u64,
     pub start: usize,
     pub end: usize,
+}
+/// Authenticated insertion metadata for a JSON schema with empty text slots.
+/// It carries no independent acceptance authority: the caller must bind the
+/// schema and these descriptors to its original operation/receipt proof.
+#[derive(Clone, Debug)]
+pub struct NativeTextReference {
+    pub op: ID,
+    pub container: ContainerID,
+    pub unicode_len: u32,
+    pub byte_len: usize,
+    pub provenance: ExtentProvenance,
+    pub extents: Vec<NativeExtentRef>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativeTextHole {
@@ -207,10 +242,15 @@ pub(crate) fn extent_refs(binding: &BoundTextExtents) -> LoroResult<Vec<NativeEx
 }
 fn append_binding(binding: &BoundTextExtents, out: &mut Vec<u8>) -> LoroResult<()> {
     for part in &binding.parts {
-        part.try_with_bytes("wire_recipe.reconstruct", |bytes| {
-            out.extend_from_slice(bytes)
-        })
-        .map_err(|_| invalid())?;
+        let before = out.len();
+        let result = part.try_for_each_chunk("wire_recipe.reconstruct", |bytes| {
+            out.extend_from_slice(bytes);
+            Ok(())
+        });
+        // The final exact Update is a necessary contiguous output. Charge
+        // actual writes even if a resolver subsequently reports an error.
+        part.record_materialization("wire_recipe.reconstruct", out.len() - before);
+        result.map_err(|_| invalid())?;
     }
     Ok(())
 }
@@ -252,9 +292,7 @@ pub fn capture_native_wire_recipe(
         {
             return Err(invalid());
         }
-        let mut payload = Vec::new();
-        append_binding(&binding, &mut payload)?;
-        if payload != expected {
+        if !binding.matches_bytes(expected)? {
             return Err(invalid());
         }
         recipe.fragments.push(wire[cursor..span.offset].to_vec());
@@ -296,7 +334,7 @@ pub fn reconstruct_native_wire_recipe(
     if total_len != recipe.original_wire_bytes {
         return Err(invalid());
     }
-    let mut wire = Vec::new();
+    let mut wire = Vec::with_capacity(total_len);
     for (index, hole) in recipe.holes.iter().enumerate() {
         wire.extend_from_slice(&recipe.fragments[index]);
         if wire.len() != hole.offset || hole.byte_len == 0 {

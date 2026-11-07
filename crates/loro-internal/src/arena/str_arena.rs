@@ -3,7 +3,6 @@ use std::ops::{Bound, RangeBounds};
 use crate::text_slice::TextSlice as BytesSlice;
 use append_only_bytes::AppendOnlyBytes;
 
-use crate::container::richtext::richtext_state::unicode_to_utf8_index;
 const INDEX_INTERVAL: u32 = 128;
 
 #[derive(Default, Debug, Clone)]
@@ -70,6 +69,31 @@ impl StrArenaCheckpoint {
     pub(super) fn bytes_len(&self) -> usize {
         self.bytes_len
     }
+}
+
+/// Scalar-count checkpoints only; never stores the source text.
+pub(super) struct ValidatedTextIndex {
+    len: Index,
+    checkpoints: Vec<Index>,
+}
+impl ValidatedTextIndex {
+    pub(super) fn prepare(slice: &BytesSlice) -> std::io::Result<Self> {
+        let mut result = Self { len: Index::default(), checkpoints: Vec::new() };
+        let mut last = 0;
+        slice.try_for_each_char("arena.reference.index", |c| {
+            let overflow = || std::io::Error::new(std::io::ErrorKind::InvalidData, "text index overflow");
+            result.len.bytes = result.len.bytes.checked_add(c.len_utf8() as u32).ok_or_else(overflow)?;
+            result.len.utf16 = result.len.utf16.checked_add(c.len_utf16() as u32).ok_or_else(overflow)?;
+            result.len.unicode = result.len.unicode.checked_add(1).ok_or_else(overflow)?;
+            if result.len.bytes - last > INDEX_INTERVAL {
+                result.checkpoints.push(result.len.scalar_copy());
+                last = result.len.bytes;
+            }
+            Ok(())
+        })?;
+        Ok(result)
+    }
+    pub(super) fn unicode_len(&self) -> usize { self.len.unicode as usize }
 }
 
 impl StrArena {
@@ -177,6 +201,39 @@ impl StrArena {
             .push_back(Segment(self.sealed_len - slice.len(), slice));
     }
 
+    /// Install validated scalar indexes after the bounded resolver views ended.
+    /// Only O(bytes / INDEX_INTERVAL) count metadata is allocated, no text body.
+    pub(super) fn alloc_sealed_with_index(&mut self, slice: BytesSlice, index: ValidatedTextIndex) -> std::io::Result<()> {
+        let overflow = || std::io::Error::new(std::io::ErrorKind::InvalidData, "text arena index overflow");
+        let end = Index {
+            bytes: self.len.bytes.checked_add(index.len.bytes).ok_or_else(overflow)?,
+            utf16: self.len.utf16.checked_add(index.len.utf16).ok_or_else(overflow)?,
+            unicode: self.len.unicode.checked_add(index.len.unicode).ok_or_else(overflow)?,
+        };
+        if slice.is_empty() { return Ok(()); }
+        if !self.bytes.is_empty() {
+            let bytes = std::mem::take(&mut self.bytes);
+            let length = bytes.len();
+            self.sealed.push_back(Segment(self.sealed_len, bytes.slice(..).into()));
+            self.sealed_len += length;
+        }
+        if self.unicode_indexes.is_empty() { self.unicode_indexes.push_back(Index::default()); }
+        for point in index.checkpoints {
+            self.unicode_indexes.push_back(Index {
+                bytes: self.len.bytes + point.bytes,
+                utf16: self.len.utf16 + point.utf16,
+                unicode: self.len.unicode + point.unicode,
+            });
+        }
+        self.len = end;
+        if self.len.bytes - self.unicode_indexes.back().unwrap().bytes > INDEX_INTERVAL {
+            self.unicode_indexes.push_back(self.len.scalar_copy());
+        }
+        self.sealed.push_back(Segment(self.sealed_len, slice.clone()));
+        self.sealed_len += slice.len();
+        Ok(())
+    }
+
     fn _alloc(&mut self, input: &str, utf16: u32, unicode_len: i32) {
         let s = input;
         self.len.bytes += s.len() as u32;
@@ -270,6 +327,25 @@ impl StrArena {
         if end <= offset + bytes.len() {
             return bytes.slice_clone(start - offset..end - offset);
         }
+        // Reference-only ranges sharing a resolver can remain a descriptor
+        // sequence even across arena segment boundaries. Mixed/native backings
+        // retain the existing counted fallback when they cannot be represented.
+        #[cfg(feature = "shared_arena_experiment")]
+        if end <= self.sealed_len {
+            let mut borrowed: Option<BytesSlice> = None;
+            let mut mergeable = true;
+            for position in first..self.sealed.len() {
+                let Segment(offset, bytes) = &self.sealed[position];
+                if *offset >= end { break; }
+                let part = bytes.slice_clone(start.saturating_sub(*offset)..(end - offset).min(bytes.len()));
+                if let Some(slice) = &mut borrowed {
+                    if slice.try_merge(&part).is_err() { mergeable = false; break; }
+                } else { borrowed = Some(part); }
+            }
+            if mergeable {
+                if let Some(slice) = borrowed { return slice; }
+            }
+        }
         // Only a requested cross-segment slice is copied, never the whole prefix.
         let mut joined = AppendOnlyBytes::with_capacity(end - start);
         // Index directly into the requested range, without walking the prefix.
@@ -338,10 +414,16 @@ impl StrArena {
             .get(i + 1)
             .map_or(self.len.bytes, |x| x.bytes) as usize;
         let bytes = self.slice_bytes(index.bytes as usize..end);
-        bytes.with_str("arena.unicode_index", |text| {
-            unicode_to_utf8_index(text, (unicode_index - index.unicode) as usize).unwrap()
-                + index.bytes as usize
-        })
+        let target = unicode_index - index.unicode;
+        let mut scalars = 0u32;
+        let mut offset = 0usize;
+        bytes.try_for_each_char("arena.unicode_index", |c| {
+            if scalars < target { offset += c.len_utf8(); }
+            scalars += 1;
+            Ok(())
+        }).expect("validated arena text");
+        assert!(scalars >= target);
+        offset + index.bytes as usize
     }
 
     #[inline]
@@ -562,6 +644,34 @@ mod test {
             a.slice_by_unicode(1..3).as_bytes().as_ref(),
             "界🙂".as_bytes()
         );
+    }
+
+    #[cfg(feature = "shared_arena_experiment")]
+    #[test]
+    fn reference_segments_unicode_seek_and_cross_segment_slice_remain_borrowed() {
+        use crate::text_slice::{ExtentResolver, TextSlice};
+        use std::{io, ops::Range, sync::Arc};
+        struct Resolver;
+        impl ExtentResolver for Resolver {
+            fn with_bytes(&self, _: u64, range: Range<usize>, _: &'static str, visit: &mut dyn FnMut(&[u8])) -> io::Result<()> {
+                visit(&"a玉🙂z".as_bytes()[range]); Ok(())
+            }
+            fn record_materialization(&self, _: u64, _: Range<usize>, _: &'static str, _: usize) {
+                panic!("reference arena seek/slice must not copy payload");
+            }
+        }
+        let resolver = Arc::new(Resolver);
+        let mut arena = StrArena::default();
+        for (id, range) in [(1, 0..4), (2, 4..9)] {
+            let slice = TextSlice::extent(resolver.clone(), id, range);
+            let index = ValidatedTextIndex::prepare(&slice).unwrap();
+            arena.alloc_sealed_with_index(slice, index).unwrap();
+        }
+        let slice = arena.slice_by_unicode(1..3);
+        assert_eq!(slice.backing_parts().len(), 2);
+        let mut chars = String::new();
+        slice.try_for_each_char("test.arena.borrow", |c| { chars.push(c); Ok(()) }).unwrap();
+        assert_eq!(chars, "玉🙂");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Bound JSON text import experiment
 
-Verified against code 2026-11-06.
+Verified against code 2026-11-07.
 
 The feature-gated `LoroDoc::import_json_updates_with_text_extents(schema, ledger)`
 accepts the existing JSON schema and requires original extent-backed insertions
@@ -43,13 +43,50 @@ requires; logical document state and published history remain unchanged.
 
 ## Copies and scope
 
-Schema creation/JSON parsing already owns the input text Strings. Those caller
-costs are not removed or counted by this API. Single-extent byte comparison is in
-place. A supplied composite operand, arena indexing, state work and later exports
-can make temporary contiguous joins. All such TextSlice joins retain the existing
-`text_slice.extent_sequence_join` copy counters and resolver materialization
-notifications. The binder creates no payload Vec or persistent materialized text
-owner. Descriptor concatenation still has the existing metadata-copy costs.
+The original `import_json_updates_with_text_extents` accepts owned schema Strings.
+Its caller costs remain; physical and composite operands now compare in place
+with `TextSlice::try_for_each_chunk`, without a temporary contiguous join.
+
+`import_json_updates_with_text_references(schema, references, ledger)` instead
+requires uncompressed peers, empty insertion strings, and one unique
+`NativeTextReference` per insertion. Descriptors bind operation/container IDs,
+provenance, ordered nonoverlapping physical ranges, byte length and scalar count.
+Missing, duplicate, unused or non-text descriptors are errors. The same JSON
+decoder validates counters using the descriptor lengths; all non-text grammar
+and ordinary rollback remain shared. The caller must authenticate descriptors
+and complete typed/receipt correspondence before admission: a self-consistent
+reference alone is not an authenticity proof.
+
+`TextSlice::try_for_each_char` validates scalars spanning physical chunks with a
+four-byte stack buffer. Arena adoption prepares sparse scalar/UTF-16/byte index
+metadata outside the arena lock, then installs it alongside the original slice.
+The temporary index is O(bytes / 128) count metadata, not an owned text body.
+Later native state operations and exports can still make temporary contiguous
+joins; those remain charged to `text_slice.extent_sequence_join`. Descriptor
+concatenation also retains its existing metadata-copy costs.
+
+Native wire recipe capture now compares borrowed chunks directly with the
+independently supplied wire. Reconstruction writes chunks directly into the
+one final exact Update allocation, charging those writes to
+`wire_recipe.reconstruct`, including partial writes on failure. It does not
+first construct a contiguous text payload. These counters do not represent the
+literal syntax bytes already stored by the recipe or arbitrary exporter costs.
+
+The read-only `export_json_updates_with_text_slices` and
+`export_json_in_id_span_with_text_slices` APIs share the normal JSON exporter for
+all non-text operands and metadata. Insertions expose original `TextSlice`
+handles separately as `NativeTextSlice`, leaving empty JSON text slots. Native
+operation Unicode slicing and arena Unicode seeks use scalar cursors instead
+of contiguous joins. Arena slices crossing same-resolver extent segments retain
+a descriptor sequence; incompatible mixed/native segments keep the counted
+fallback because the current representation cannot concatenate those owners.
+
+Independent text comparison uses `TextSlice::try_bytes_equal`: sequential
+resolver visits and a fixed 1024-byte stack buffer avoid nested cross-store locks
+and payload-sized heap allocation. Actual left-hand scratch writes are charged
+to `text_slice.bounded_compare`; this is bounded copying, not a claim of zero
+bytes copied. Ordinary `PartialEq` also uses this path after its identity fast
+path. Exact-byte comparison and all resolver callback checks remain intact.
 
 `crates/loro/tests/bound_text_import.rs` uses real native allocations and mixed
 map/list/child-text/style history. It checks compressed/uncompressed peer IDs,
