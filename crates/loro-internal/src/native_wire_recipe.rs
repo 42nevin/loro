@@ -187,12 +187,20 @@ pub(crate) struct NativeTextSpan {
 fn invalid() -> LoroError {
     LoroError::DecodeError("invalid native wire recipe or extent binding".into())
 }
-fn check_native(wire: &[u8], ledger: &dyn NativeWireLedger) -> LoroResult<()> {
+fn check_native(wire: &[u8], ledger: &dyn NativeWireLedger,
+    lookup: Option<&dyn crate::native_reference_oracle::NativeTextLookup>) -> LoroResult<()> {
     ledger.verify_wire_receipt(wire)?;
-    LoroDoc::new_auto_commit().import(wire)?;
+    if let Some(lookup) = lookup {
+        // This pass checks native grammar just like the existing fresh-doc pass.
+        // Delta dependencies may be pending here; the independent application
+        // semantic verifier below checks them against the actual base.
+        LoroDoc::new().import_reference_updates(wire, lookup)?;
+    } else {
+        LoroDoc::new_auto_commit().import(wire)?;
+    }
     ledger.verify_typed_semantics(wire)
 }
-fn spans(wire: &[u8]) -> LoroResult<Vec<NativeTextSpan>> {
+fn spans(wire: &[u8], lookup: Option<&dyn crate::native_reference_oracle::NativeTextLookup>) -> LoroResult<Vec<NativeTextSpan>> {
     let parsed = parse_header_and_body(wire, true)?;
     if !matches!(parsed.mode, EncodeMode::FastUpdates) {
         return Ok(Vec::new());
@@ -206,7 +214,11 @@ fn spans(wire: &[u8]) -> LoroResult<Vec<NativeTextSpan>> {
             return Err(invalid());
         }
         let offset = wire.len() - reader.len();
-        for mut span in ChangeStore::annotate_text_spans(&reader[..len])? {
+        let spans = match lookup {
+            Some(lookup) => ChangeStore::annotate_text_spans_with_lookup(&reader[..len], lookup)?,
+            None => ChangeStore::annotate_text_spans(&reader[..len])?,
+        };
+        for mut span in spans {
             span.offset = span.offset.checked_add(offset).ok_or_else(invalid)?;
             result.push(span);
         }
@@ -257,10 +269,23 @@ fn append_binding(binding: &BoundTextExtents, out: &mut Vec<u8>) -> LoroResult<(
 /// Capture exact literal syntax plus complete native text-value holes. Missing
 /// bindings retain literal bytes; an invalid supplied binding is always an error.
 pub fn capture_native_wire_recipe(
-    wire: &[u8],
-    ledger: &dyn NativeWireLedger,
+    wire: &[u8], ledger: &dyn NativeWireLedger,
 ) -> LoroResult<NativeWireRecipe> {
-    check_native(wire, ledger)?;
+    capture_native_wire_recipe_mode(wire, ledger, None)
+}
+/// Strict reference capture: native parsing and span annotation retain original
+/// text owners. Missing lookup/ledger bindings are errors, never literal fallback.
+pub fn capture_native_wire_recipe_with_lookup(
+    wire: &[u8], ledger: &dyn NativeWireLedger,
+    lookup: &dyn crate::native_reference_oracle::NativeTextLookup,
+) -> LoroResult<NativeWireRecipe> {
+    capture_native_wire_recipe_mode(wire, ledger, Some(lookup))
+}
+fn capture_native_wire_recipe_mode(
+    wire: &[u8], ledger: &dyn NativeWireLedger,
+    lookup: Option<&dyn crate::native_reference_oracle::NativeTextLookup>,
+) -> LoroResult<NativeWireRecipe> {
+    check_native(wire, ledger, lookup)?;
     let mut recipe = NativeWireRecipe {
         version: 1,
         original_wire_bytes: wire.len(),
@@ -269,10 +294,11 @@ pub fn capture_native_wire_recipe(
         fallback_text_bytes: 0,
     };
     let mut cursor = 0;
-    for span in spans(wire)? {
+    for span in spans(wire, lookup)? {
         let Some(binding) =
             ledger.text_extents(span.op, &span.container, span.unicode_len, span.byte_len)?
         else {
+            if lookup.is_some() { return Err(invalid()); }
             recipe.fallback_text_bytes = recipe
                 .fallback_text_bytes
                 .checked_add(span.byte_len)
@@ -313,9 +339,22 @@ pub fn capture_native_wire_recipe(
 /// Reassemble and verify against independent external receipt/semantic authority.
 /// The recipe alone is deliberately insufficient to authorize reconstruction.
 pub fn reconstruct_native_wire_recipe(
-    recipe: &NativeWireRecipe,
-    ledger: &dyn NativeWireLedger,
+    recipe: &NativeWireRecipe, ledger: &dyn NativeWireLedger,
 ) -> LoroResult<Vec<u8>> {
+    reconstruct_native_wire_recipe_mode(recipe, ledger, None)
+}
+/// Reconstruct exact output with independent native reference validation.
+pub fn reconstruct_native_wire_recipe_with_lookup(
+    recipe: &NativeWireRecipe, ledger: &dyn NativeWireLedger,
+    lookup: &dyn crate::native_reference_oracle::NativeTextLookup,
+) -> LoroResult<Vec<u8>> {
+    reconstruct_native_wire_recipe_mode(recipe, ledger, Some(lookup))
+}
+fn reconstruct_native_wire_recipe_mode(
+    recipe: &NativeWireRecipe, ledger: &dyn NativeWireLedger,
+    lookup: Option<&dyn crate::native_reference_oracle::NativeTextLookup>,
+) -> LoroResult<Vec<u8>> {
+    if lookup.is_some() && recipe.fallback_text_bytes != 0 { return Err(invalid()); }
     if recipe.version != 1
         || recipe.fragments.len() != recipe.holes.len().checked_add(1).ok_or_else(invalid)?
     {
@@ -363,8 +402,8 @@ pub fn reconstruct_native_wire_recipe(
     if wire.len() != recipe.original_wire_bytes {
         return Err(invalid());
     }
-    check_native(&wire, ledger)?;
-    let spans = spans(&wire)?;
+    check_native(&wire, ledger, lookup)?;
+    let spans = spans(&wire, lookup)?;
     let mut fallback_text_bytes = 0usize;
     for span in &spans {
         if !recipe.holes.iter().any(|h| {

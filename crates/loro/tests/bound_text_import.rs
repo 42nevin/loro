@@ -526,3 +526,255 @@ fn text_slice_export_keeps_original_operands_and_nontext_grammar() {
         }
     }
 }
+
+impl loro::native_reference_oracle::NativeTextLookup for Ledger {
+    fn text_extents(&self, op: ID, container: &ContainerID, unicode_len: u32, byte_len: usize) -> LoroResult<Option<BoundTextExtents>> {
+        NativeWireLedger::text_extents(self, op, container, unicode_len, byte_len)
+    }
+}
+
+#[test]
+fn native_reference_update_oracle_is_wire_driven_and_keeps_extent_history() {
+    use loro::native_reference_oracle::NativeReferenceOracle;
+    let (source, _, ledger) = fixture();
+    let wire = source.export(ExportMode::all_updates()).unwrap();
+    let base = LoroDoc::new();
+    let base_before = canonical(&base);
+    loro::reset_text_copy_metrics();
+    let oracle = NativeReferenceOracle::from_update(&base, &wire, Arc::new(ledger)).unwrap();
+    assert!(!loro::text_copy_metrics().contains_key("native.decode.text_arena"));
+    assert_eq!(oracle.oplog_vv(), source.oplog_vv());
+    assert_eq!(oracle.state_vv(), source.state_vv());
+    assert_eq!(oracle.get_deep_value(), source.get_deep_value());
+    let (_, slices) = oracle.history(&VersionVector::default(), &oracle.oplog_vv());
+    assert!(!slices.is_empty());
+    assert!(slices.iter().all(|s| s.slice.is_extent()));
+    assert_eq!(canonical(&base), base_before);
+    let (_, again) = oracle.history(&VersionVector::default(), &oracle.oplog_vv());
+    assert_eq!(slices[0].slice.backing_parts(), again[0].slice.backing_parts());
+}
+
+#[test]
+fn native_reference_update_rejects_missing_mismatched_and_panicking_lookup() {
+    use loro::native_reference_oracle::{NativeReferenceOracle, NativeTextLookup};
+    struct Bad(u8);
+    impl NativeTextLookup for Bad {
+        fn text_extents(&self, _: ID, _: &ContainerID, _: u32, _: usize) -> LoroResult<Option<BoundTextExtents>> {
+            if self.0 == 1 { panic!("lookup failure"); }
+            Ok(None)
+        }
+    }
+    let (source, _, mut ledger) = fixture();
+    let wire = source.export(ExportMode::all_updates()).unwrap();
+    let base = LoroDoc::new();
+    for fault in [0, 1] {
+        assert!(NativeReferenceOracle::from_update(&base, &wire, Arc::new(Bad(fault))).is_err());
+        assert!(base.oplog_vv().is_empty());
+    }
+    let first = ledger.parts[0].backing_info();
+    ledger.store.0.write().unwrap().get_mut(&first.extent.unwrap()).unwrap()[first.range.start] = b'!';
+    assert!(NativeReferenceOracle::from_update(&base, &wire, Arc::new(ledger)).is_err());
+    assert!(base.oplog_vv().is_empty());
+}
+
+#[test]
+fn native_reference_update_rejects_pending_base_without_committing_it() {
+    use loro::native_reference_oracle::NativeReferenceOracle;
+    let (source, _, ledger) = fixture();
+    let wire = source.export(ExportMode::all_updates()).unwrap();
+    let base = LoroDoc::new();
+    base.get_text("pending").insert(0, "not committed").unwrap();
+    let pending = base.get_pending_txn_len();
+    assert!(pending > 0);
+    assert!(NativeReferenceOracle::from_update(&base, &wire, Arc::new(ledger)).is_err());
+    assert_eq!(base.get_pending_txn_len(), pending);
+}
+
+#[test]
+fn native_reference_update_returns_error_when_resolver_panics_after_binding() {
+    use loro::native_reference_oracle::{NativeReferenceOracle, NativeTextLookup};
+    use std::sync::atomic::AtomicUsize;
+    struct Late { reads: AtomicUsize }
+    impl ExtentResolver for Late {
+        fn with_bytes(&self, _: u64, range: Range<usize>, _: &'static str, visit: &mut dyn FnMut(&[u8])) -> io::Result<()> {
+            if self.reads.fetch_add(1, Ordering::SeqCst) != 0 { panic!("late resolver failure"); }
+            visit(&"a玉🙂Z".as_bytes()[range]); Ok(())
+        }
+    }
+    struct Lookup(Arc<Late>);
+    impl NativeTextLookup for Lookup {
+        fn text_extents(&self, _: ID, _: &ContainerID, _: u32, _: usize) -> LoroResult<Option<BoundTextExtents>> {
+            Ok(Some(BoundTextExtents { provenance: ExtentProvenance::OriginalLocal,
+                parts: vec![TextSlice::extent(self.0.clone(), 1, 0..9)] }))
+        }
+    }
+    let (source, _, _) = fixture();
+    let wire = source.export(ExportMode::all_updates()).unwrap();
+    let base = LoroDoc::new();
+    let lookup = Arc::new(Lookup(Arc::new(Late { reads: AtomicUsize::new(0) })));
+    let released = Arc::downgrade(&lookup.0);
+    assert!(NativeReferenceOracle::from_update(&base, &wire, lookup).is_err());
+    assert!(base.oplog_vv().is_empty());
+    assert!(released.upgrade().is_none(), "failed private oracle must release its resolver owner");
+}
+
+#[test]
+fn native_reference_snapshot_accepts_empty_auto_commit_configuration() {
+    use loro::native_reference_oracle::NativeReferenceOracle;
+    let source = LoroDoc::new();
+    source.set_peer_id(913).unwrap();
+    let mut allocator = Allocator { store: Arc::new(Store::default()), context: None, parts: vec![] };
+    source.get_text("body").insert_unicode_with_allocator(0, "a玉🙂Z", &mut allocator).unwrap();
+    source.commit();
+    let ledger = Arc::new(Ledger {
+        store: allocator.store.clone(), op: allocator.parts[0].0.id,
+        container: allocator.parts[0].0.container.clone(),
+        parts: allocator.parts.into_iter().map(|(_, part)| part).collect(),
+        calls: Mutex::new(vec![]),
+    });
+    let wire = source.export(ExportMode::Snapshot).unwrap();
+    // Public new() opens an empty auto-commit transaction; fork_cow inherits it.
+    let config = LoroDoc::new();
+    config.config_default_text_style(Some(StyleConfig { expand: ExpandType::Both }));
+    assert_eq!(config.get_pending_txn_len(), 0);
+    let before = config.oplog_vv();
+    let oracle = NativeReferenceOracle::from_snapshot_with_config(&config, &wire, ledger.clone()).unwrap();
+    assert_eq!(oracle.oplog_vv(), source.oplog_vv());
+    assert!(oracle.get_deep_value_with_text_slices().unwrap()
+        .same_value(&source.get_deep_value_with_text_slices().unwrap()).unwrap());
+    assert_eq!(config.oplog_vv(), before);
+    assert_eq!(config.get_pending_txn_len(), 0);
+    // Reject a genuinely pending caller before any implicit commit/fork.
+    config.get_text("uncommitted").insert(0, "preserve caller draft").unwrap();
+    let pending = config.get_pending_txn_len();
+    assert!(pending > 0);
+    assert!(NativeReferenceOracle::from_snapshot_with_config(&config, &wire, ledger).is_err());
+    assert_eq!(config.get_pending_txn_len(), pending);
+}
+
+// Independent counter-positive controls and public native-oracle lifetime checks.
+#[test]
+fn independent_native_decoder_update_has_positive_legacy_copy_control() {
+    use loro::native_reference_oracle::NativeReferenceOracle;
+    let (source, _, ledger) = fixture();
+    let wire = source.export(ExportMode::all_updates()).unwrap();
+    let expected = source.get_deep_value();
+    let ordinary = LoroDoc::new();
+    loro::reset_text_copy_metrics();
+    ordinary.import(&wire).unwrap();
+    let legacy = loro::text_copy_metrics();
+    assert_eq!(legacy["native.decode.text_arena"].native_bytes, 9);
+    let base = LoroDoc::new();
+    loro::reset_text_copy_metrics();
+    let oracle = NativeReferenceOracle::from_update(&base, &wire, Arc::new(ledger)).unwrap();
+    let reference = loro::text_copy_metrics();
+    assert!(!reference.contains_key("native.decode.text_arena"));
+    assert!(!reference.contains_key("text_slice.extent_sequence_join"));
+    eprintln!("INDEPENDENT_NATIVE_UPDATE_COUNTERS legacy={} reference={}",
+        serde_json::to_string(&legacy).unwrap(), serde_json::to_string(&reference).unwrap());
+    drop(wire); drop(source);
+    let (_, history) = oracle.history(&VersionVector::default(), &oracle.oplog_vv());
+    assert!(!history.is_empty());
+    assert!(history.iter().all(|x| x.slice.is_extent()));
+    assert_eq!(oracle.get_deep_value(), expected);
+    assert!(base.oplog_vv().is_empty());
+}
+
+#[test]
+fn independent_native_decoder_snapshot_retains_originals_after_wire_drop() {
+    use loro::native_reference_oracle::NativeReferenceOracle;
+    let source = LoroDoc::new(); source.set_peer_id(712).unwrap();
+    source.set_record_timestamp(false);
+    let text = source.get_text("body");
+    let mut allocator = Allocator { store: Arc::new(Store::default()), context: None, parts: vec![] };
+    text.insert_unicode_with_allocator(0, "a玉", &mut allocator).unwrap();
+    text.insert_unicode_with_allocator(2, "🙂Z", &mut allocator).unwrap(); source.commit();
+    let ledger = Ledger { store: allocator.store.clone(), op: allocator.parts[0].0.id,
+        container: allocator.parts[0].0.container.clone(),
+        parts: allocator.parts.into_iter().map(|(_, slice)| slice).collect(), calls: Mutex::new(vec![]) };
+    let wire = source.export(ExportMode::Snapshot).unwrap();
+    let expected = source.get_deep_value();
+    let base = LoroDoc::new();
+    loro::reset_text_copy_metrics();
+    let oracle = NativeReferenceOracle::from_snapshot_with_config(&base, &wire, Arc::new(ledger)).unwrap();
+    let projection = oracle.get_deep_value_with_text_slices().unwrap();
+    let counts = loro::text_copy_metrics();
+    assert!(!counts.contains_key("native.snapshot.decode_string"));
+    assert!(!counts.contains_key("native.snapshot.text_arena"));
+    assert!(!counts.contains_key("native.decode.text_arena"));
+    assert!(!counts.contains_key("text_slice.extent_sequence_join"));
+    assert!(counts.get("oracle.snapshot.encoded_body").is_some_and(|c| c.native_bytes > 0),
+        "the required encoded input copy must remain visible");
+    assert_eq!(projection.text.len(), 1);
+    assert!(!projection.text[0].runs.is_empty());
+    assert!(projection.text[0].runs.iter().all(|run| run.slice.is_extent()));
+    eprintln!("INDEPENDENT_NATIVE_SNAPSHOT_COUNTERS {}", serde_json::to_string(&counts).unwrap());
+    drop(wire); drop(source); drop(text);
+    let (_, history) = oracle.history(&VersionVector::default(), &oracle.oplog_vv());
+    assert!(history.iter().all(|x| x.slice.is_extent()));
+    assert_eq!(oracle.get_deep_value(), expected);
+    assert!(base.oplog_vv().is_empty());
+}
+
+#[test]
+fn independent_native_decoder_ordinary_drop_still_commits_pending_edits() {
+    let events=Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let subscription;
+    {
+        let doc=LoroDoc::new(); doc.set_peer_id(991).unwrap();
+        let output=events.clone();
+        subscription=doc.subscribe_local_update(Box::new(move |bytes| {
+            output.lock().unwrap().push(bytes.to_vec()); true
+        }));
+        doc.get_text("body").insert(0,"ordinary Drop玉🙂").unwrap();
+        assert!(doc.get_pending_txn_len()>0);
+        assert!(events.lock().unwrap().is_empty(),"fixture committed before Drop");
+    }
+    let updates=events.lock().unwrap();
+    assert!(!updates.is_empty(),"ordinary final-owner Drop lost its implicit commit");
+    let restored=LoroDoc::new();
+    for update in updates.iter(){restored.import(update).unwrap();}
+    assert_eq!(restored.get_text("body").to_string(),"ordinary Drop玉🙂");
+    drop(subscription);
+}
+
+#[test]
+fn independent_native_decoder_snapshot_failure_sweep_keeps_caller_and_releases_owners() {
+    use loro::native_reference_oracle::{NativeReferenceOracle, NativeTextLookup};
+    use std::sync::atomic::AtomicUsize;
+    struct Faults { calls: Arc<AtomicUsize>, fail_at:usize, panic:bool }
+    impl ExtentResolver for Faults {
+        fn with_bytes(&self, _:u64, range:Range<usize>, _: &'static str, visit:&mut dyn FnMut(&[u8])) -> io::Result<()> {
+            if self.calls.fetch_add(1,Ordering::SeqCst)==self.fail_at {
+                if self.panic { panic!("independent snapshot late resolver failure"); }
+                return Err(io::Error::from(io::ErrorKind::InvalidData));
+            }
+            visit(&b"abc"[range]); Ok(())
+        }
+    }
+    struct Lookup(Arc<Faults>);
+    impl NativeTextLookup for Lookup {
+        fn text_extents(&self, _:ID, _: &ContainerID, _:u32, _:usize) -> LoroResult<Option<BoundTextExtents>> {
+            Ok(Some(BoundTextExtents { provenance:ExtentProvenance::OriginalLocal,
+                parts:vec![TextSlice::extent(self.0.clone(),1,0..3)] }))
+        }
+    }
+    let source=LoroDoc::new();source.set_peer_id(80).unwrap();
+    source.get_text("body").insert(0,"abc").unwrap();source.commit();
+    let wire=source.export(ExportMode::Snapshot).unwrap();let mut exercised_late=false;
+    for panic in [false,true] { for fail_at in 0..12 {
+        let base=LoroDoc::new();let calls=Arc::new(AtomicUsize::new(0));
+        let resolver=Arc::new(Faults {calls:calls.clone(),fail_at,panic});
+        let released=Arc::downgrade(&resolver);
+        let result=NativeReferenceOracle::from_snapshot_with_config(&base,&wire,Arc::new(Lookup(resolver)));
+        let reached=calls.load(Ordering::SeqCst)>fail_at;
+        assert_eq!(result.is_err(),reached,"unexpected result at read {fail_at}, panic={panic}");
+        exercised_late|=reached && fail_at>0;
+        assert_eq!(base.get_pending_txn_len(),0);
+        assert!(base.oplog_vv().is_empty());assert!(base.state_vv().is_empty());
+        drop(result);
+        assert!(released.upgrade().is_none(),"failed/finished candidate leaked its resolver");
+        eprintln!("INDEPENDENT_SNAPSHOT_FAILURE_SWEEP panic={panic} fail_at={fail_at} reads={} reached={reached}",calls.load(Ordering::SeqCst));
+    }}
+    assert!(exercised_late,"fault sweep never reached a post-binding callback");
+}

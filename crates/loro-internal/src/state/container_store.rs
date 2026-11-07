@@ -305,6 +305,33 @@ impl ContainerStore {
         Ok(())
     }
 
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(crate) fn decode_all_reference(
+        &mut self,
+        lookup: &dyn crate::native_reference_oracle::NativeTextLookup,
+    ) -> LoroResult<()> {
+        let peer = self.peer.load(std::sync::atomic::Ordering::Relaxed);
+        if let Some(root) = &self.shallow_root_store {
+            root.store.lock().decode_all_reference(peer, lookup)?;
+        }
+        self.store.decode_all_reference(peer, lookup)
+    }
+
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(crate) fn check_reference_oracle_base(&self) -> LoroResult<()> {
+        if let Some(root) = &self.shallow_root_store {
+            root.store.lock().check_reference_oracle_base()?;
+        }
+        self.store.check_reference_oracle_base()
+    }
+
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(crate) fn resident_reference_text(
+        &self, idx: ContainerIdx,
+    ) -> LoroResult<Option<&super::RichtextState>> {
+        self.store.resident_reference_text(idx)
+    }
+
     pub fn iter_and_decode_all(&mut self) -> impl Iterator<Item = &mut State> {
         self.store.iter_all_containers_mut().map(|(idx, v)| {
             v.get_state_mut(
@@ -474,6 +501,30 @@ mod test {
 
         new_store.decode(bytes).unwrap();
         new_store
+    }
+
+    #[cfg(feature = "shared_arena_experiment")]
+    #[test]
+    fn reference_eager_state_checks_unread_text_and_invalid_wrapper() {
+        struct Missing;
+        impl crate::native_reference_oracle::NativeTextLookup for Missing {
+            fn text_extents(&self, _: loro_common::ID, _: &ContainerID, _: u32, _: usize)
+                -> LoroResult<Option<crate::native_wire_recipe::BoundTextExtents>> { Ok(None) }
+        }
+        let source = LoroDoc::new_auto_commit();
+        source.get_text("never-read").insert(0, "hidden玉", PosType::Unicode).unwrap();
+        source.commit_then_renew();
+        let encoded = source.app_state().lock().store.encode();
+        let mut restored = decode_container_store(encoded);
+        assert!(restored.decode_all_reference(&Missing).is_err());
+
+        let mut invalid = ContainerStore::new(SharedArena::new(), Configure::default(),
+            Arc::new(AtomicU64::new(99)));
+        let bad_kv = KvWrapper::new_mem();
+        bad_kv.insert(&ContainerID::new_root("bad", ContainerType::Text).to_bytes(),
+            Bytes::from_static(&[255]));
+        invalid.decode(bad_kv.export()).unwrap();
+        assert!(invalid.decode_all_reference(&Missing).is_err());
     }
 
     fn init_doc() -> LoroDoc {

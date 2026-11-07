@@ -532,3 +532,24 @@ fn admitted_full_prefix_suffix_blocks_bind_scalar_subranges_of_original_extent()
         wire
     );
 }
+
+#[test]
+fn strict_recipe_uses_native_reference_decoder_and_span_scanner() {
+    use loro::native_reference_oracle::NativeTextLookup;
+    use loro::native_wire_recipe::{capture_native_wire_recipe_with_lookup, reconstruct_native_wire_recipe_with_lookup};
+    struct Lookup<'a>(&'a Ledger);
+    impl NativeTextLookup for Lookup<'_> {
+        fn text_extents(&self, op: ID, cid: &ContainerID, unicode_len: u32, byte_len: usize) -> LoroResult<Option<BoundTextExtents>> {
+            self.0.text_extents(op, cid, unicode_len, byte_len)
+        }
+    }
+    let (ledger, _) = fixture();
+    let lookup = Lookup(&ledger);
+    let recipe = capture_native_wire_recipe_with_lookup(&ledger.wire, &ledger, &lookup).unwrap();
+    assert_eq!(reconstruct_native_wire_recipe_with_lookup(&recipe, &ledger, &lookup).unwrap(), ledger.wire);
+    struct Missing;
+    impl NativeTextLookup for Missing {
+        fn text_extents(&self, _: ID, _: &ContainerID, _: u32, _: usize) -> LoroResult<Option<BoundTextExtents>> { Ok(None) }
+    }
+    assert!(capture_native_wire_recipe_with_lookup(&ledger.wire, &ledger, &Missing).is_err());
+}

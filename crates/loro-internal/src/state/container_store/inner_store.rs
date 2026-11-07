@@ -709,12 +709,13 @@ impl InnerStore {
             .map_err(|e| loro_common::LoroError::DecodeError(e.into_boxed_str()))?;
         self.kv.remove(FRONTIERS_KEY);
         let entries = self.kv.scan_all_entries();
+        let decoded = entries.into_iter().map(|(key, bytes)| {
+            Ok((ContainerID::try_from_bytes(&key)?, ContainerWrapper::try_new_from_bytes(bytes)?))
+        }).collect::<LoroResult<Vec<_>>>()?;
         let store = &mut self.store;
         let arena = &self.arena;
         arena.with_guards(|guards| {
-            for (k, v) in entries {
-                let cid = ContainerID::from_bytes(&k);
-                let c = ContainerWrapper::new_from_bytes(v);
+            for (cid, c) in decoded {
                 let parent = c.parent();
                 let idx = guards.register_container(&cid);
                 let p = parent.as_ref().map(|p| guards.register_container(p));
@@ -733,6 +734,71 @@ impl InnerStore {
                 .set_in_value_cache_queue(false);
         }
 
+        self.evicted_since_full_load = false;
+        self.load_state = LoadState::AllLoaded;
+        Ok(())
+    }
+
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(super) fn check_reference_oracle_base(&self) -> LoroResult<()> {
+        let invalid = || loro_common::LoroError::DecodeError(
+            "reference oracle base text state is not fully resident".into());
+        for key in self.kv.scan_all_keys() {
+            let cid = ContainerID::try_from_bytes(&key)?;
+            if cid.container_type() != ContainerType::Text { continue; }
+            let idx = self.arena.id_to_idx(&cid).ok_or_else(invalid)?;
+            let slot = self.store.get(&Self::slot(idx)).ok_or_else(invalid)?;
+            if slot.wrapper.try_get_state().is_none() { return Err(invalid()); }
+        }
+        for slot in self.store.values() {
+            if slot.wrapper.kind() != ContainerType::Text { continue; }
+            let state = slot.wrapper.try_get_state().ok_or_else(invalid)?;
+            let text = state.as_richtext_state().ok_or_else(invalid)?;
+            if text.text_backing_info().iter().any(|backing| backing.extent.is_none()) {
+                return Err(invalid());
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(super) fn resident_reference_text(
+        &self, idx: ContainerIdx,
+    ) -> LoroResult<Option<&crate::state::RichtextState>> {
+        let invalid = || loro_common::LoroError::DecodeError(
+            "reference state projection requires resident text".into());
+        if let Some(slot) = self.store.get(&Self::slot(idx)) {
+            return slot.wrapper.try_get_state().and_then(|state| state.as_richtext_state())
+                .map(|text| Some(text.as_ref())).ok_or_else(invalid);
+        }
+        let cid = self.arena.get_container_id(idx).ok_or_else(invalid)?;
+        if self.kv.get(&cid.to_bytes()).is_some() { return Err(invalid()); }
+        Ok(None)
+    }
+
+    /// Fresh snapshot oracle construction must validate even entries that no
+    /// visible traversal would reach. Unlike load_all, malformed external keys,
+    /// headers and payloads return Err rather than unwinding under state locks.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(super) fn decode_all_reference(
+        &mut self,
+        peer: loro_common::PeerID,
+        lookup: &dyn crate::native_reference_oracle::NativeTextLookup,
+    ) -> LoroResult<()> {
+        let entries = self.kv.scan_all_entries();
+        let mut decoded = Vec::with_capacity(entries.len());
+        let ctx = ContainerCreationContext { configure: &self.config, peer };
+        for (key, bytes) in entries {
+            let cid = ContainerID::try_from_bytes(&key)?;
+            let idx = self.arena.register_container(&cid);
+            let mut container = ContainerWrapper::try_new_from_bytes(bytes)?;
+            container.decode_state_reference(idx, &cid, ctx, lookup)?;
+            decoded.push((idx, container));
+        }
+        for (idx, container) in decoded {
+            Self::insert_entry(&mut self.store, &self.owner, idx, container);
+        }
+        self.value_cache_queue.clear();
         self.evicted_since_full_load = false;
         self.load_state = LoadState::AllLoaded;
         Ok(())

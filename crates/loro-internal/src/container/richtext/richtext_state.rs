@@ -14,7 +14,6 @@ use std::{
 };
 use std::{
     ops::{Add, AddAssign, Range, Sub},
-    str::Utf8Error,
     sync::Arc,
 };
 use tracing::instrument;
@@ -337,23 +336,26 @@ mod text_chunk {
 
     impl TextChunk {
         pub fn new(bytes: impl Into<BytesSlice>, id: IdFull) -> Self {
-            let bytes = bytes.into();
-            let (unicode_len, utf16_len) = bytes.with_str("text_chunk.new", |text| {
-                let mut utf16_len = 0;
-                let mut unicode_len = 0;
-                for c in text.chars() {
-                    utf16_len += c.len_utf16();
-                    unicode_len += 1;
-                }
-                (unicode_len, utf16_len)
-            });
+            Self::try_new(bytes, id).expect("validated text chunk backing")
+        }
 
-            Self {
+        pub fn try_new(bytes: impl Into<BytesSlice>, id: IdFull) -> std::io::Result<Self> {
+            let bytes = bytes.into();
+            let mut unicode_len = 0i32;
+            let mut utf16_len = 0i32;
+            bytes.try_for_each_char("text_chunk.new", |c| {
+                let overflow = || std::io::Error::from(std::io::ErrorKind::InvalidData);
+                unicode_len = unicode_len.checked_add(1).ok_or_else(overflow)?;
+                utf16_len = utf16_len.checked_add(c.len_utf16() as i32).ok_or_else(overflow)?;
+                Ok(())
+            })?;
+
+            Ok(Self {
                 unicode_len,
                 bytes,
-                utf16_len: utf16_len as i32,
+                utf16_len,
                 id,
-            }
+            })
         }
 
         #[inline]
@@ -410,26 +412,42 @@ mod text_chunk {
             }
         }
 
+        /// Return byte and UTF-16 offsets without requesting a contiguous view.
+        fn unicode_boundary(&self, pos: usize) -> Option<(usize, usize)> {
+            if pos > self.unicode_len as usize { return None; }
+            if pos == 0 { return Some((0, 0)); }
+            if pos == self.unicode_len as usize {
+                return Some((self.bytes.len(), self.utf16_len as usize));
+            }
+            if self.is_all_ascii() { return Some((pos, pos)); }
+            let (mut unicode, mut bytes, mut utf16) = (0usize, 0usize, 0usize);
+            self.bytes.try_for_each_char("text_chunk.boundary", |c| {
+                if unicode < pos { bytes += c.len_utf8(); utf16 += c.len_utf16(); }
+                unicode += 1;
+                Ok(())
+            }).expect("validated text chunk backing");
+            Some((bytes, utf16))
+        }
+
+        fn offset_to_unicode(&self, pos: usize, utf16: bool) -> Result<usize, usize> {
+            let (mut offset, mut unicode) = (0usize, 0usize);
+            let mut result = if pos == 0 { Some(Ok(0)) } else { None };
+            self.bytes.try_for_each_char("text_chunk.offset", |c| {
+                if result.is_none() {
+                    offset += if utf16 { c.len_utf16() } else { c.len_utf8() };
+                    if offset == pos { result = Some(Ok(unicode + 1)); }
+                    else if offset > pos { result = Some(Err(unicode)); }
+                }
+                unicode += 1;
+                Ok(())
+            }).expect("validated text chunk backing");
+            result.unwrap_or(Err(unicode))
+        }
+
         /// Convert a unicode index on this text to an event index
         pub fn convert_unicode_offset_to_event_offset(&self, offset: usize) -> usize {
-            if !cfg!(feature = "wasm") {
-                return offset;
-            }
-            let retained = self.bytes.clone();
-            retained.with_str("text_chunk.convert_event", |text| {
-                if cfg!(feature = "wasm") {
-                    let mut event_offset = 0;
-                    for (i, c) in text.chars().enumerate() {
-                        if i == offset {
-                            return event_offset;
-                        }
-                        event_offset += c.len_utf16();
-                    }
-                    event_offset
-                } else {
-                    offset
-                }
-            })
+            if !cfg!(feature = "wasm") { return offset; }
+            self.unicode_boundary(offset.min(self.unicode_len as usize)).unwrap().1
         }
 
         pub fn new_empty() -> Self {
@@ -461,51 +479,31 @@ mod text_chunk {
         /// Convert a UTF-16 offset within this chunk to a unicode offset.
         ///
         /// O(1) when the chunk has no astral-plane characters; otherwise it
-        /// scans up to `utf16_offset` chars. Mirrors [`utf16_to_unicode_index`].
+        /// scans the chunk without joining extents. Mirrors [`utf16_to_unicode_index`].
         pub fn utf16_offset_to_unicode(&self, utf16_offset: usize) -> Result<usize, usize> {
-            if self.is_all_bmp() {
-                return Ok(utf16_offset);
-            }
-            self.bytes
-                .with_str("text_chunk.utf16_to_unicode_index", |text| {
-                    super::utf16_to_unicode_index(text, utf16_offset)
-                })
+            if self.is_all_bmp() { return Ok(utf16_offset); }
+            self.offset_to_unicode(utf16_offset, true)
         }
 
         /// Convert a UTF-8 (byte) offset within this chunk to a unicode offset.
         /// O(1) when the chunk is pure ASCII.
         pub fn utf8_offset_to_unicode(&self, utf8_offset: usize) -> Result<usize, usize> {
-            if self.is_all_ascii() {
-                return Ok(utf8_offset);
-            }
-            self.bytes
-                .with_str("text_chunk.utf8_to_unicode_index", |text| {
-                    super::utf8_to_unicode_index(text, utf8_offset)
-                })
+            if self.is_all_ascii() { return Ok(utf8_offset); }
+            self.offset_to_unicode(utf8_offset, false)
         }
 
         /// Convert a unicode offset within this chunk to a UTF-16 offset.
         /// O(1) when the chunk has no astral-plane characters.
         pub fn unicode_offset_to_utf16(&self, unicode_offset: usize) -> Option<usize> {
-            if self.is_all_bmp() {
-                return Some(unicode_offset);
-            }
-            self.bytes
-                .with_str("text_chunk.unicode_to_utf16_index", |text| {
-                    super::unicode_to_utf16_index(text, unicode_offset)
-                })
+            if self.is_all_bmp() { return Some(unicode_offset); }
+            self.unicode_boundary(unicode_offset).map(|(_, utf16)| utf16)
         }
 
         /// Convert a unicode offset within this chunk to a UTF-8 (byte) offset.
         /// O(1) when the chunk is pure ASCII.
         pub fn unicode_offset_to_utf8(&self, unicode_offset: usize) -> Option<usize> {
-            if self.is_all_ascii() {
-                return Some(unicode_offset);
-            }
-            self.bytes
-                .with_str("text_chunk.unicode_to_utf8_index", |text| {
-                    super::unicode_to_utf8_index(text, unicode_offset)
-                })
+            if self.is_all_ascii() { return Some(unicode_offset); }
+            self.unicode_boundary(unicode_offset).map(|(bytes, _)| bytes)
         }
 
         /// Slice this chunk by unicode offsets, returning the substring.
@@ -517,171 +515,82 @@ mod text_chunk {
             consumer: &'static str,
             visit: impl FnOnce(&str) -> R,
         ) -> Result<R, ()> {
-            self.bytes.with_str(consumer, |text| {
-                let slice = if self.is_all_ascii() {
-                    text.get(start..end).ok_or(())?
-                } else {
-                    super::unicode_slice(text, start, end)?
-                };
-                Ok(visit(slice))
-            })
+            let start = self.unicode_boundary(start).ok_or(())?.0;
+            let end = self.unicode_boundary(end).ok_or(())?.0;
+            if start > end { return Err(()); }
+            Ok(self.bytes.slice_clone(start..end).with_str(consumer, visit))
         }
 
         pub fn unicode_slice(
-            &self,
-            start: usize,
-            end: usize,
+            &self, start: usize, end: usize,
         ) -> Result<std::borrow::Cow<'_, str>, ()> {
-            let range = self
-                .bytes
-                .with_str("text_chunk.unicode_slice.index", |text| {
-                    if self.is_all_ascii() {
-                        return text.get(start..end).map(|_| start..end).ok_or(());
-                    }
-                    let lo = super::unicode_to_utf8_index(text, start).ok_or(())?;
-                    let hi = super::unicode_to_utf8_index(text, end).ok_or(())?;
-                    Ok(lo..hi)
-                })?;
-            // A returned contiguous substring cannot retain a transaction borrow.
-            // TextSlice records this temporary read-time materialization.
-            Ok(self.bytes.str_range(range, "text_chunk.unicode_slice"))
+            let start = self.unicode_boundary(start).ok_or(())?.0;
+            let end = self.unicode_boundary(end).ok_or(())?.0;
+            if start > end { return Err(()); }
+            // The requested returned contiguous substring is an explicit
+            // projection copy, unlike index lookup or state mutation.
+            Ok(self.bytes.str_range(start..end, "text_chunk.unicode_slice"))
         }
 
         pub(crate) fn delete_by_entity_index(
-            &mut self,
-            unicode_offset: usize,
-            unicode_len: usize,
+            &mut self, unicode_offset: usize, unicode_len: usize,
         ) -> (Option<Self>, usize) {
-            let retained = self.bytes.clone();
-            retained.with_str("text_chunk.delete", |text| {
-                let s = text;
-                let mut start_byte = 0;
-                let mut end_byte = self.bytes().len();
-                let start_unicode_index = unicode_offset;
-                let end_unicode_index = unicode_offset + unicode_len;
-                let mut start_utf16_index = 0;
-                let mut current_utf16_index = 0;
-                let mut current_utf8_index = 0;
-                for (current_unicode_index, c) in s.chars().enumerate() {
-                    if current_unicode_index == start_unicode_index {
-                        start_utf16_index = current_utf16_index;
-                        start_byte = current_utf8_index;
-                    }
-
-                    if current_unicode_index == end_unicode_index {
-                        end_byte = current_utf8_index;
-                        break;
-                    }
-
-                    current_utf16_index += c.len_utf16();
-                    current_utf8_index += c.len_utf8();
+            let end = unicode_offset.checked_add(unicode_len).expect("valid text delete range");
+            let (start_byte, start_utf16) = self.unicode_boundary(unicode_offset).expect("valid text delete start");
+            let (end_byte, end_utf16) = self.unicode_boundary(end).expect("valid text delete end");
+            let removed_utf16 = end_utf16 - start_utf16;
+            let event_len = if cfg!(feature = "wasm") { removed_utf16 } else { unicode_len };
+            let next = match (start_byte == 0, end_byte == self.bytes.len()) {
+                (true, true) => {
+                    self.bytes = BytesSlice::empty();
+                    self.unicode_len = 0;
+                    self.utf16_len = 0;
+                    None
                 }
-
-                self.utf16_len -= (current_utf16_index - start_utf16_index) as i32;
-
-                let event_len = if cfg!(feature = "wasm") {
-                    current_utf16_index - start_utf16_index
-                } else {
-                    unicode_len
-                };
-
-                self.unicode_len -= unicode_len as i32;
-                let next = match (start_byte == 0, end_byte == self.bytes.len()) {
-                    (true, true) => {
-                        self.bytes = BytesSlice::empty();
-                        None
-                    }
-                    (true, false) => {
-                        self.bytes.slice_(end_byte..);
-                        self.id = self.id.inc(end_unicode_index as i32);
-                        None
-                    }
-                    (false, true) => {
-                        self.bytes.slice_(..start_byte);
-                        None
-                    }
-                    (false, false) => {
-                        let next = self.bytes.slice_clone(end_byte..);
-                        let next = Self::new(next, self.id.inc(end_unicode_index as i32));
-                        self.unicode_len -= next.unicode_len;
-                        self.utf16_len -= next.utf16_len;
-                        self.bytes.slice_(..start_byte);
-                        Some(next)
-                    }
-                };
-
-                self.check();
-                if let Some(next) = next.as_ref() {
-                    next.check();
+                (true, false) => {
+                    self.bytes.slice_(end_byte..);
+                    self.id = self.id.inc(end as i32);
+                    self.unicode_len -= unicode_len as i32;
+                    self.utf16_len -= removed_utf16 as i32;
+                    None
                 }
-                (next, event_len)
-            })
+                (false, true) => {
+                    self.bytes.slice_(..start_byte);
+                    self.unicode_len = unicode_offset as i32;
+                    self.utf16_len = start_utf16 as i32;
+                    None
+                }
+                (false, false) => {
+                    let next = Self { bytes: self.bytes.slice_clone(end_byte..),
+                        unicode_len: self.unicode_len - end as i32,
+                        utf16_len: self.utf16_len - end_utf16 as i32, id: self.id.inc(end as i32) };
+                    self.bytes.slice_(..start_byte);
+                    self.unicode_len = unicode_offset as i32;
+                    self.utf16_len = start_utf16 as i32;
+                    Some(next)
+                }
+            };
+            self.check();
+            if let Some(next) = next.as_ref() { next.check(); }
+            (next, event_len)
         }
 
         fn check(&self) {
-            if !cfg!(any(debug_assertions, test)) {
-                return;
-            }
+            if !cfg!(any(debug_assertions, test)) { return; }
             if self.bytes.len() as i32 == self.unicode_len {
                 assert_eq!(self.utf16_len, self.unicode_len);
                 return;
             }
-            let retained = self.bytes.clone();
-            retained.with_str("text_chunk.check", |text| {
-                if !cfg!(any(debug_assertions, test)) {
-                    return;
-                }
-
-                let bytes_len = self.bytes.len() as i32;
-                if bytes_len == self.unicode_len {
-                    assert_eq!(self.utf16_len, self.unicode_len);
-                    return;
-                }
-
-                assert_eq!(self.unicode_len, text.chars().count() as i32);
-                assert_eq!(
-                    self.utf16_len,
-                    text.chars().map(|c| c.len_utf16()).sum::<usize>() as i32
-                );
-            })
+            let checked = Self::try_new(self.bytes.clone(), self.id).expect("validated text chunk backing");
+            assert_eq!(self.unicode_len, checked.unicode_len);
+            assert_eq!(self.utf16_len, checked.utf16_len);
         }
 
         pub(crate) fn entity_range_to_event_range(&self, range: Range<usize>) -> Range<usize> {
-            if !cfg!(feature = "wasm") {
-                return range;
-            }
-            let retained = self.bytes.clone();
-            retained.with_str("text_chunk.event_range", |text| {
-                if cfg!(feature = "wasm") {
-                    assert!(range.start <= range.end);
-                    if range.start == 0 && range.end == self.unicode_len as usize {
-                        return 0..self.utf16_len as usize;
-                    }
-
-                    let mut start = 0;
-                    let mut end = 0;
-                    let mut utf16_index = 0;
-                    for (unicode_index, c) in text.chars().enumerate() {
-                        if unicode_index == range.start {
-                            start = utf16_index;
-                        }
-                        if unicode_index == range.end {
-                            end = utf16_index;
-                            break;
-                        }
-
-                        utf16_index += c.len_utf16();
-                    }
-
-                    if end == 0 {
-                        end = utf16_index;
-                    }
-
-                    start..end
-                } else {
-                    range
-                }
-            })
+            if !cfg!(feature = "wasm") { return range; }
+            assert!(range.start <= range.end);
+            self.unicode_boundary(range.start).expect("valid text range").1
+                ..self.unicode_boundary(range.end).expect("valid text range").1
         }
     }
 
@@ -694,147 +603,26 @@ mod text_chunk {
     impl generic_btree::rle::Sliceable for TextChunk {
         fn _slice(&self, range: Range<usize>) -> Self {
             assert!(range.start < range.end);
-            if range.start == 0 && range.end == self.unicode_len as usize {
-                return self.clone();
-            }
-            if self.is_all_ascii() {
-                return Self {
-                    unicode_len: range.len() as i32,
-                    bytes: self.bytes.slice_clone(range.clone()),
-                    utf16_len: range.len() as i32,
-                    id: self.id.inc(range.start as i32),
-                };
-            }
-            let retained = self.bytes.clone();
-            retained.with_str("text_chunk.slice", |text| {
-                assert!(range.start < range.end);
-                let total_unicode_len = self.unicode_len as usize;
-                if range.start == 0 && range.end == total_unicode_len {
-                    return self.clone();
-                }
-
-                // Fast path for ASCII text: unicode index == byte index, and utf16 index == unicode index.
-                if self.is_all_ascii() {
-                    let ans = Self {
-                        unicode_len: range.len() as i32,
-                        bytes: self.bytes.slice_clone(range.start..range.end),
-                        utf16_len: range.len() as i32,
-                        id: self.id.inc(range.start as i32),
-                    };
-                    ans.check();
-                    return ans;
-                }
-
-                // Fast path for slicing a suffix/prefix to avoid scanning the whole chunk.
-                if range.end == total_unicode_len {
-                    let mut utf16_offset = 0;
-                    let mut start_byte = self.bytes.len();
-                    for (unicode_index, (byte_index, c)) in text.char_indices().enumerate() {
-                        if unicode_index == range.start {
-                            start_byte = byte_index;
-                            break;
-                        }
-                        utf16_offset += c.len_utf16();
-                    }
-
-                    let ans = Self {
-                        unicode_len: (total_unicode_len - range.start) as i32,
-                        bytes: self.bytes.slice_clone(start_byte..),
-                        utf16_len: self.utf16_len - utf16_offset as i32,
-                        id: self.id.inc(range.start as i32),
-                    };
-                    ans.check();
-                    return ans;
-                }
-
-                if range.start == 0 {
-                    let mut utf16_len = 0;
-                    let mut end_byte = self.bytes.len();
-                    for (unicode_index, (byte_index, c)) in text.char_indices().enumerate() {
-                        if unicode_index == range.end {
-                            end_byte = byte_index;
-                            break;
-                        }
-                        utf16_len += c.len_utf16();
-                    }
-
-                    let ans = Self {
-                        unicode_len: range.end as i32,
-                        bytes: self.bytes.slice_clone(..end_byte),
-                        utf16_len: utf16_len as i32,
-                        id: self.id,
-                    };
-                    ans.check();
-                    return ans;
-                }
-
-                // General middle slice.
-                let mut utf16_len = 0;
-                let mut start = 0;
-                let mut end = 0;
-                let mut started = false;
-                let mut last_unicode_index = 0;
-                for (unicode_index, (i, c)) in text.char_indices().enumerate() {
-                    if unicode_index == range.start {
-                        start = i;
-                        started = true;
-                    }
-
-                    if unicode_index == range.end {
-                        end = i;
-                        break;
-                    }
-                    if started {
-                        utf16_len += c.len_utf16();
-                    }
-
-                    last_unicode_index = unicode_index;
-                }
-
-                assert!(started);
-                if end == 0 {
-                    assert_eq!(last_unicode_index + 1, range.end);
-                    end = self.bytes.len();
-                }
-
-                let ans = Self {
-                    unicode_len: range.len() as i32,
-                    bytes: self.bytes.slice_clone(start..end),
-                    utf16_len: utf16_len as i32,
-                    id: self.id.inc(range.start as i32),
-                };
-                ans.check();
-                ans
-            })
+            if range.start == 0 && range.end == self.unicode_len as usize { return self.clone(); }
+            let (start, start_utf16) = self.unicode_boundary(range.start).expect("valid text slice start");
+            let (end, end_utf16) = self.unicode_boundary(range.end).expect("valid text slice end");
+            let ans = Self { bytes: self.bytes.slice_clone(start..end), unicode_len: range.len() as i32,
+                utf16_len: (end_utf16 - start_utf16) as i32, id: self.id.inc(range.start as i32) };
+            ans.check();
+            ans
         }
 
         fn split(&mut self, pos: usize) -> Self {
-            let retained = self.bytes.clone();
-            retained.with_str("text_chunk.split", |text| {
-                let mut utf16_len = 0;
-                let mut byte_offset = 0;
-                for (unicode_index, (i, c)) in text.char_indices().enumerate() {
-                    if unicode_index == pos {
-                        byte_offset = i;
-                        break;
-                    }
-
-                    utf16_len += c.len_utf16();
-                }
-                let right = Self {
-                    unicode_len: self.unicode_len - pos as i32,
-                    bytes: self.bytes.slice_clone(byte_offset..),
-                    utf16_len: self.utf16_len - utf16_len as i32,
-                    id: self.id.inc(pos as i32),
-                };
-
-                self.unicode_len = pos as i32;
-                self.utf16_len = utf16_len as i32;
-                self.bytes.slice_(..byte_offset);
-                right.check();
-                self.check();
-                right
-            })
+            let (bytes, utf16) = self.unicode_boundary(pos).expect("valid text split");
+            let right = Self { bytes: self.bytes.slice_clone(bytes..),
+                unicode_len: self.unicode_len - pos as i32,
+                utf16_len: self.utf16_len - utf16 as i32, id: self.id.inc(pos as i32) };
+            self.bytes.slice_(..bytes);
+            self.unicode_len = pos as i32;
+            self.utf16_len = utf16 as i32;
+            self.check();
+            right.check();
+            right
         }
     }
 
@@ -881,6 +669,10 @@ impl Default for RichtextStateChunk {
 impl RichtextStateChunk {
     pub fn new_text(s: impl Into<BytesSlice>, id: IdFull) -> Self {
         Self::Text(TextChunk::new(s, id))
+    }
+
+    pub(crate) fn try_new_text(s: impl Into<BytesSlice>, id: IdFull) -> std::io::Result<Self> {
+        TextChunk::try_new(s, id).map(Self::Text)
     }
 
     pub fn new_empty() -> Self {
@@ -996,12 +788,8 @@ impl Serialize for RichtextStateChunk {
 }
 
 impl RichtextStateChunk {
-    pub fn try_new(s: impl Into<BytesSlice>, id: IdFull) -> Result<Self, Utf8Error> {
-        let s = s.into();
-        s.with_bytes("richtext.validate", |bytes| {
-            std::str::from_utf8(bytes).map(|_| ())
-        })?;
-        Ok(RichtextStateChunk::Text(TextChunk::new(s, id)))
+    pub fn try_new(s: impl Into<BytesSlice>, id: IdFull) -> std::io::Result<Self> {
+        Self::try_new_text(s, id)
     }
 
     pub fn from_style(style: Arc<StyleOp>, anchor_type: AnchorType) -> Self {
@@ -1939,24 +1727,14 @@ impl RichtextState {
             let RichtextStateChunk::Text(chunk) = str else {
                 return Err(());
             };
-            chunk.bytes().with_str("richtext.get_char", |s| {
-                if cfg!(not(feature = "wasm")) {
-                    s.chars().nth(cursor.offset).ok_or(())
-                } else {
-                    let utf16offset = unicode_to_utf16_index(s, cursor.offset).unwrap();
-                    let mut current_utf16_offset = 0;
-                    for c in s.chars() {
-                        if current_utf16_offset == utf16offset {
-                            return Ok(c);
-                        }
-                        current_utf16_offset += c.len_utf16();
-                        if current_utf16_offset > utf16offset {
-                            return Err(());
-                        }
-                    }
-                    Err(())
-                }
-            })
+            let mut result = None;
+            let mut index = 0;
+            chunk.bytes().try_for_each_char("richtext.get_char", |c| {
+                if index == cursor.offset { result = Some(c); }
+                index += 1;
+                Ok(())
+            }).map_err(|_| ())?;
+            result.ok_or(())
         };
         self.check_cache();
         result
@@ -3772,6 +3550,40 @@ mod logical_extent_consumer_tests {
     };
     struct Resolver {
         copied: AtomicUsize,
+    }
+    #[cfg(feature = "shared_arena_experiment")]
+    #[test]
+    fn composite_text_apply_split_delete_and_boundaries_never_join() {
+        struct Composite;
+        impl crate::text_slice::ExtentResolver for Composite {
+            fn with_bytes(&self, _: u64, range: Range<usize>, _: &'static str,
+                visit: &mut dyn FnMut(&[u8])) -> io::Result<()> {
+                visit(&"a玉🙂b".as_bytes()[range]); Ok(())
+            }
+        }
+        let resolver = Arc::new(Composite);
+        let mut bytes = BytesSlice::extent(resolver.clone(), 1, 0..2);
+        bytes.try_merge(&BytesSlice::extent(resolver.clone(), 2, 2..6)).unwrap();
+        bytes.try_merge(&BytesSlice::extent(resolver, 3, 6..9)).unwrap();
+        crate::text_slice::reset_text_copy_metrics();
+        let original = TextChunk::new(bytes.clone(), IdFull::new(3, 10, 10));
+        assert_eq!(original.unicode_offset_to_utf8(3), Some(8));
+        assert_eq!(original.unicode_offset_to_utf16(3), Some(4));
+        assert_eq!(original.utf8_offset_to_unicode(5), Err(2));
+        assert_eq!(original.utf16_offset_to_unicode(3), Err(2));
+        let sliced = original._slice(1..3);
+        assert_eq!((sliced.unicode_len(), sliced.utf16_len(), sliced.utf8_len()), (2, 3, 7));
+        let mut split = original.clone();
+        let right = split.split(2);
+        assert_eq!((split.utf8_len(), right.utf8_len()), (4, 5));
+        let mut deleted = original.clone();
+        let (suffix, _) = deleted.delete_by_entity_index(1, 1);
+        assert_eq!((deleted.utf8_len(), suffix.unwrap().utf8_len()), (1, 5));
+        let mut state = RichtextState::default();
+        state.insert_at_entity_index(0, bytes, IdFull::new(3, 10, 10));
+        assert_eq!(state.get_char_by_event_index(2), Ok('🙂'));
+        assert!(crate::text_slice::text_copy_metrics().values()
+            .all(|count| count.native_bytes == 0 && count.extent_bytes == 0));
     }
     impl crate::text_slice::ExtentResolver for Resolver {
         fn with_bytes(

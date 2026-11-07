@@ -559,13 +559,33 @@ pub fn decode_block(
     decode_block_inner(m_bytes, shared_arena, header,
         #[cfg(feature = "shared_arena_experiment")]
         None,
+        #[cfg(feature = "shared_arena_experiment")]
+        None,
     )
+}
+
+#[cfg(feature = "shared_arena_experiment")]
+pub(super) fn decode_block_with_lookup(
+    m_bytes: &[u8], shared_arena: &SharedArena,
+    header: Option<&mut ChangesBlockHeader>,
+    lookup: &dyn crate::native_reference_oracle::NativeTextLookup,
+) -> LoroResult<Vec<Change>> {
+    decode_block_inner(m_bytes, shared_arena, header, None, Some(lookup))
 }
 
 #[cfg(feature = "shared_arena_experiment")]
 pub(super) fn annotate_text_spans(m_bytes: &[u8]) -> LoroResult<Vec<crate::native_wire_recipe::NativeTextSpan>> {
     let mut spans = Vec::new();
-    decode_block_inner(m_bytes, &SharedArena::new(), None, Some(&mut spans))?;
+    decode_block_inner(m_bytes, &SharedArena::new(), None, Some(&mut spans), None)?;
+    Ok(spans)
+}
+
+#[cfg(feature = "shared_arena_experiment")]
+pub(super) fn annotate_text_spans_with_lookup(
+    m_bytes: &[u8], lookup: &dyn crate::native_reference_oracle::NativeTextLookup,
+) -> LoroResult<Vec<crate::native_wire_recipe::NativeTextSpan>> {
+    let mut spans = Vec::new();
+    decode_block_inner(m_bytes, &SharedArena::new(), None, Some(&mut spans), Some(lookup))?;
     Ok(spans)
 }
 
@@ -575,6 +595,8 @@ fn decode_block_inner(
     header: Option<&mut ChangesBlockHeader>,
     #[cfg(feature = "shared_arena_experiment")]
     mut text_spans: Option<&mut Vec<crate::native_wire_recipe::NativeTextSpan>>,
+    #[cfg(feature = "shared_arena_experiment")]
+    lookup: Option<&dyn crate::native_reference_oracle::NativeTextLookup>,
 ) -> LoroResult<Vec<Change>> {
     let doc = postcard::from_bytes(m_bytes)
         .map_err(|e| LoroError::DecodeError(format!("Decode block error {e}").into_boxed_str()))?;
@@ -727,6 +749,15 @@ fn decode_block_inner(
                 });
             }
         }
+        #[cfg(feature = "shared_arena_experiment")]
+        let content = if let Some(lookup) = lookup {
+            encoding::decode_op_with_lookup(cid, value, &mut del_iter, shared_arena,
+                &decode_arena, &positions, prop, ID::new(peer, counter), lookup)?
+        } else {
+            decode_op(cid, value, &mut del_iter, shared_arena,
+                &decode_arena, &positions, prop, ID::new(peer, counter))?
+        };
+        #[cfg(not(feature = "shared_arena_experiment"))]
         let content = decode_op(
             cid,
             value,

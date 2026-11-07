@@ -1,4 +1,6 @@
 pub mod container_tree;
+#[cfg(feature = "shared_arena_experiment")]
+pub mod reference_state;
 
 use crate::sync::{AtomicU64, Mutex, RwLock};
 #[cfg(test)]

@@ -22,6 +22,8 @@ mod bound_text_import;
 #[cfg(feature = "shared_arena_experiment")]
 pub mod native_wire_recipe;
 #[cfg(feature = "shared_arena_experiment")]
+pub mod native_reference_oracle;
+#[cfg(feature = "shared_arena_experiment")]
 pub mod native_text_observation;
 pub mod handler;
 pub mod sync;
@@ -180,6 +182,10 @@ pub struct LoroDocInner {
     /// which may break the invariants of `import`, `export` and `checkout`.
     txn: Arc<LoroMutex<Option<Transaction>>>,
     auto_commit: AtomicBool,
+    /// Private, eagerly constructed oracle owners have no transaction and must
+    /// never attempt a commit while being discarded after a construction error.
+    #[cfg(feature = "shared_arena_experiment")]
+    oracle_read_only: AtomicBool,
     detached: AtomicBool,
     local_update_subs: SubscriberSetWithQueue<(), LocalUpdateCallback, Vec<u8>>,
     peer_id_change_subs: SubscriberSetWithQueue<(), PeerIdUpdateCallback, ID>,
@@ -193,6 +199,13 @@ pub const LORO_VERSION: &str = include_str!("../VERSION");
 
 impl Drop for LoroDoc {
     fn drop(&mut self) {
+        #[cfg(feature = "shared_arena_experiment")]
+        if self.oracle_read_only.load(std::sync::atomic::Ordering::Relaxed) {
+            // The private constructor drained its empty transaction before any
+            // external resolver call. Drop the owned data normally, without
+            // locking or reusing a potentially poisoned failed candidate.
+            return;
+        }
         if Arc::strong_count(&self.inner) == 1 {
             let _ = self.implicit_commit_then_stop();
         }

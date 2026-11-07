@@ -1693,25 +1693,67 @@ mod snapshot {
                 )
             })?;
             let s: String = value;
+            // One successful owned postcard decode; count UTF-8 payload bytes,
+            // excluding the postcard length prefix and other codec metadata.
+            crate::text_slice::record_copy("native.snapshot.decode_string", s.len(), false);
             Ok((LoroValue::String(s.into()), bytes))
         }
 
         fn decode_snapshot_fast(
             idx: crate::container::idx::ContainerIdx,
-            (string, mut bytes): (loro_common::LoroValue, &[u8]),
+            (string, bytes): (loro_common::LoroValue, &[u8]),
             ctx: ContainerCreationContext,
         ) -> loro_common::LoroResult<Self>
         where
             Self: Sized,
         {
+            let string = string.into_string().map_err(|_| {
+                state_decode_error("Decode richtext state failed: value is not a string")
+            })?;
+            let source = StrSlice::new_from_str(&string);
+            // The legacy state arena copies this entire decoded UTF-8 value.
+            crate::text_slice::record_copy("native.snapshot.text_arena", string.len(), false);
+            let mut offset = 0usize;
+            Self::decode_snapshot_text(idx, &string, bytes, ctx, |_, native| {
+                let end = offset + native.len();
+                let slice = source.bytes().slice_clone(offset..end);
+                offset = end;
+                Ok(slice)
+            })
+        }
+    }
+
+    impl RichtextState {
+        /// Decode the native state grammar while borrowing its postcard string.
+        /// Text IDs and styles come only from that grammar; the lookup supplies
+        /// backing after comparison with each independently decoded operand.
+        #[cfg(feature = "shared_arena_experiment")]
+        pub(crate) fn decode_snapshot_reference(
+            idx: crate::container::idx::ContainerIdx,
+            cid: &loro_common::ContainerID,
+            payload: &[u8],
+            ctx: ContainerCreationContext,
+            lookup: &dyn crate::native_reference_oracle::NativeTextLookup,
+        ) -> LoroResult<Self> {
+            let (string, bytes) = postcard::take_from_bytes::<&str>(payload)
+                .map_err(|_| state_decode_error("Decode richtext state failed: invalid text value"))?;
+            Self::decode_snapshot_text(idx, string, bytes, ctx, |id, native| {
+                crate::native_reference_oracle::bind_native_text(lookup, id, cid, native)
+            })
+        }
+
+        fn decode_snapshot_text(
+            idx: crate::container::idx::ContainerIdx,
+            string: &str,
+            mut bytes: &[u8],
+            ctx: ContainerCreationContext,
+            mut alloc_text: impl FnMut(ID, &str) -> LoroResult<crate::text_slice::TextSlice>,
+        ) -> LoroResult<Self> {
             let mut text = RichtextState::new(idx, ctx.configure.text_style_config.clone());
             let mut loader = RichtextStateLoader::default();
             let peers = decode_peer_table(&mut bytes, "Decode richtext state failed")?;
 
-            let string = string.into_string().map_err(|_| {
-                state_decode_error("Decode richtext state failed: value is not a string")
-            })?;
-            let mut s = StrSlice::new_from_str(&string);
+            let mut remaining = string;
             let iters = serde_columnar::from_bytes::<EncodedText>(bytes).map_err(|err| {
                 state_decode_error(format!(
                     "Decode richtext state failed: invalid spans: {err}"
@@ -1777,21 +1819,25 @@ mod snapshot {
                         }
 
                         // Text
-                        if s.as_str().chars().count() < len as usize {
-                            return Err(state_decode_error(
-                                "Decode richtext state failed: text span exceeds value length",
-                            ));
-                        }
-
-                        let (new, rest) = s.split_at_unicode_pos(len as usize);
-                        s = rest;
-                        RichtextStateChunk::new_text(new.bytes().clone(), id_full)
+                        let end = remaining.char_indices().nth(len as usize - 1)
+                            .map(|(offset, c)| offset + c.len_utf8())
+                            .ok_or_else(|| state_decode_error(
+                                "Decode richtext state failed: text span exceeds value length"))?;
+                        let (native, rest) = remaining.split_at(end);
+                        let slice = alloc_text(id_full.id(), native)?;
+                        remaining = rest;
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            RichtextStateChunk::try_new_text(slice, id_full)
+                        })).map_err(|_| state_decode_error(
+                            "Decode richtext state failed: text backing panicked"))?
+                            .map_err(|_| state_decode_error(
+                                "Decode richtext state failed: invalid text backing"))?
                     }
                 };
 
                 loader.push(chunk);
             }
-            if !s.as_str().is_empty() {
+            if !remaining.is_empty() {
                 return Err(state_decode_error(
                     "Decode richtext state failed: text value not fully covered",
                 ));
@@ -1873,6 +1919,129 @@ mod snapshot {
                 counter,
                 lamport_sub_counter: 0,
                 len,
+            }
+        }
+
+        #[cfg(feature = "shared_arena_experiment")]
+        mod reference_snapshot {
+            use super::*;
+            use crate::{
+                native_reference_oracle::NativeTextLookup,
+                native_wire_recipe::{BoundTextExtents, ExtentProvenance},
+                text_slice::{ExtentResolver, TextSlice},
+            };
+            use std::{io, ops::Range};
+
+            struct Bytes(Arc<[u8]>);
+            impl ExtentResolver for Bytes {
+                fn with_bytes(&self, _: u64, range: Range<usize>, _: &'static str,
+                    visit: &mut dyn FnMut(&[u8])) -> io::Result<()> {
+                    visit(self.0.get(range).ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?);
+                    Ok(())
+                }
+            }
+            struct Lookup { container: loro_common::ContainerID, text: TextSlice, id: ID }
+            impl NativeTextLookup for Lookup {
+                fn text_extents(&self, id: ID, container: &loro_common::ContainerID,
+                    unicode_len: u32, byte_len: usize) -> LoroResult<Option<BoundTextExtents>> {
+                    if id != self.id || container != &self.container || unicode_len != 3 || byte_len != 8 {
+                        return Ok(None);
+                    }
+                    Ok(Some(BoundTextExtents { provenance: ExtentProvenance::OriginalLocal,
+                        parts: vec![self.text.clone()] }))
+                }
+            }
+            fn lookup(value: &[u8]) -> Lookup {
+                let resolver = Arc::new(Bytes(Arc::from(value)));
+                // Both non-ASCII scalars cross physical extent ranges.
+                let mut text = TextSlice::extent(resolver.clone(), 1, 0..2);
+                text.try_merge(&TextSlice::extent(resolver.clone(), 2, 2..5)).unwrap();
+                text.try_merge(&TextSlice::extent(resolver, 3, 5..8)).unwrap();
+                Lookup { container: loro_common::ContainerID::new_root("body", ContainerType::Text),
+                    text, id: ID::new(PEER, 4) }
+            }
+            fn decode(payload: &[u8], lookup: &Lookup) -> LoroResult<RichtextState> {
+                let configure = crate::configure::Configure::default();
+                RichtextState::decode_snapshot_reference(
+                    ContainerIdx::from_index_and_type(0, ContainerType::Text), &lookup.container,
+                    payload, ContainerCreationContext { configure: &configure, peer: 0 }, lookup)
+            }
+
+            #[test]
+            fn legacy_snapshot_decode_reports_both_body_copies() {
+                let bytes = payload("玉🙂a", vec![span(4, 3)], vec![]);
+                crate::text_slice::reset_text_copy_metrics();
+                let value = RichtextState::decode_value(&bytes).unwrap();
+                let counts = crate::text_slice::text_copy_metrics();
+                let string = &counts["native.snapshot.decode_string"];
+                assert_eq!((string.native_bytes, string.native_calls), (8, 1));
+                assert_eq!((string.extent_bytes, string.extent_calls), (0, 0));
+                assert!(!counts.contains_key("native.snapshot.text_arena"));
+
+                let configure = crate::configure::Configure::default();
+                let _state = RichtextState::decode_snapshot_fast(
+                    ContainerIdx::from_index_and_type(0, ContainerType::Text), value,
+                    ContainerCreationContext { configure: &configure, peer: 0 }).unwrap();
+                let counts = crate::text_slice::text_copy_metrics();
+                let string = &counts["native.snapshot.decode_string"];
+                let arena = &counts["native.snapshot.text_arena"];
+                assert_eq!((string.native_bytes, string.native_calls), (8, 1));
+                assert_eq!((arena.native_bytes, arena.native_calls), (8, 1));
+                assert_eq!((arena.extent_bytes, arena.extent_calls), (0, 0));
+
+                let original = lookup("玉🙂a".as_bytes());
+                crate::text_slice::reset_text_copy_metrics();
+                decode(&bytes, &original).unwrap();
+                let counts = crate::text_slice::text_copy_metrics();
+                assert!(!counts.contains_key("native.snapshot.decode_string"));
+                assert!(!counts.contains_key("native.snapshot.text_arena"));
+            }
+
+            #[test]
+            fn borrowed_state_validates_native_ids_and_keeps_split_scalar_extents() {
+                let original = lookup("玉🙂a".as_bytes());
+                let bytes = payload("玉🙂a", vec![span(4, 3)], vec![]);
+                crate::text_slice::reset_text_copy_metrics();
+                let state = decode(&bytes, &original).unwrap();
+                let backings = state.text_backing_info();
+                assert_eq!(backings.iter().map(|b| b.extent).collect::<Vec<_>>(),
+                    vec![Some(1), Some(2), Some(3)]);
+                assert!(crate::text_slice::text_copy_metrics().values()
+                    .all(|count| count.extent_bytes == 0 && count.native_bytes == 0));
+                assert_eq!(state.get_text_id_runs()[0].start, ID::new(PEER, 4));
+                assert_eq!(state.get_text_id_runs()[0].unicode_len, 3);
+            }
+
+            #[test]
+            fn borrowed_state_rejects_missing_mismatched_and_incomplete_native_spans() {
+                let original = lookup("玉🙂a".as_bytes());
+                for (text, spans) in [
+                    ("玉🙂a", vec![span(5, 3)]),
+                    ("玉🙂b", vec![span(4, 3)]),
+                    ("玉🙂a", vec![span(4, 2)]),
+                    ("玉🙂a", vec![span(4, 4)]),
+                    ("玉🙂a", vec![span(4, -2)]),
+                ] {
+                    assert!(decode(&payload(text, spans, vec![]), &original).is_err());
+                }
+                let invalid_utf8 = lookup(&[0xff; 8]);
+                assert!(decode(&payload("玉🙂a", vec![span(4, 3)], vec![]), &invalid_utf8).is_err());
+            }
+
+            #[test]
+            fn borrowed_state_preserves_style_validation_and_lone_start() {
+                let original = lookup("玉🙂a".as_bytes());
+                let marked = payload("玉🙂a", vec![span(10, 0), span(4, 3), span(11, -1)],
+                    vec![mark(LoroValue::Bool(true), richtext::ExpandType::After)]);
+                let state = decode(&marked, &original).unwrap();
+                let mut anchors = 0;
+                state.iter_raw(&mut |chunk| if matches!(chunk, RichtextStateChunk::Style { .. }) { anchors += 1; });
+                assert_eq!(anchors, 2);
+                assert!(decode(&payload("玉🙂a", vec![span(11, -1), span(4, 3)], vec![]), &original).is_err());
+                assert!(decode(&payload("玉🙂a", vec![span(10, 0), span(4, 3)],
+                    vec![mark(LoroValue::Bool(true), richtext::ExpandType::After)]), &original).is_ok());
+                assert!(decode(&payload("玉🙂a", vec![span(4, 3)],
+                    vec![mark(LoroValue::Bool(true), richtext::ExpandType::After)]), &original).is_err());
             }
         }
 

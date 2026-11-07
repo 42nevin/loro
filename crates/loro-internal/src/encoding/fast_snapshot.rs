@@ -166,6 +166,31 @@ pub(crate) fn decode_snapshot_inner(
     doc: &LoroDoc,
     origin: InternalString,
 ) -> Result<(), LoroError> {
+    decode_snapshot_inner_impl(snapshot, doc, origin,
+        #[cfg(feature = "shared_arena_experiment")]
+        None,
+    )
+}
+
+/// Construction-only reference oracle path. The lookup is borrowed only while
+/// every history block and state entry is independently decoded and checked.
+#[cfg(feature = "shared_arena_experiment")]
+pub(crate) fn decode_snapshot_reference(
+    doc: &LoroDoc,
+    bytes: Bytes,
+    origin: InternalString,
+    lookup: &dyn crate::native_reference_oracle::NativeTextLookup,
+) -> LoroResult<()> {
+    decode_snapshot_inner_impl(_decode_snapshot_bytes(bytes)?, doc, origin, Some(lookup))
+}
+
+fn decode_snapshot_inner_impl(
+    snapshot: Snapshot,
+    doc: &LoroDoc,
+    origin: InternalString,
+    #[cfg(feature = "shared_arena_experiment")]
+    lookup: Option<&dyn crate::native_reference_oracle::NativeTextLookup>,
+) -> Result<(), LoroError> {
     let Snapshot {
         oplog_bytes,
         state_bytes,
@@ -205,6 +230,13 @@ pub(crate) fn decode_snapshot_inner(
 
     let arena_checkpoint = oplog.arena.checkpoint_for_rollback();
     let decode_result = (|| -> LoroResult<()> {
+        #[cfg(feature = "shared_arena_experiment")]
+        if let Some(lookup) = lookup {
+            oplog.decode_change_store_reference(oplog_bytes, lookup)?;
+        } else {
+            oplog.decode_change_store(oplog_bytes)?;
+        }
+        #[cfg(not(feature = "shared_arena_experiment"))]
         oplog.decode_change_store(oplog_bytes)?;
         let state_frontiers;
         if shallow_root_state_bytes.is_empty() {
@@ -245,6 +277,11 @@ pub(crate) fn decode_snapshot_inner(
             }
         }
 
+        #[cfg(feature = "shared_arena_experiment")]
+        if let Some(lookup) = lookup {
+            state.store.decode_all_reference(lookup)?;
+            oplog.change_store().corrupt_block_error()?;
+        }
         state.init_with_states_and_version(state_frontiers, &oplog, vec![], false, origin)?;
         Ok(())
     })();
@@ -273,6 +310,19 @@ pub(crate) fn decode_snapshot_inner(
 }
 
 impl OpLog {
+    #[cfg(feature = "shared_arena_experiment")]
+    fn decode_change_store_reference(
+        &mut self,
+        bytes: Bytes,
+        lookup: &dyn crate::native_reference_oracle::NativeTextLookup,
+    ) -> LoroResult<()> {
+        let decoded = self.change_store().import_all_with_lookup(bytes, lookup)?;
+        self.change_store().corrupt_block_error()?;
+        self.dag.set_version_by_fast_snapshot_import(decoded);
+        self.refresh_visible_op_count();
+        Ok(())
+    }
+
     pub(super) fn decode_change_store(&mut self, bytes: bytes::Bytes) -> LoroResult<()> {
         let v = self.change_store().import_all(bytes)?;
         self.dag.set_version_by_fast_snapshot_import(v);
@@ -440,6 +490,110 @@ mod tests {
             let mut encoded = Vec::new();
             _encode_snapshot(&snapshot, &mut encoded);
             assert_eq!(encoded.len(), expected_len);
+        }
+    }
+
+    #[cfg(feature = "shared_arena_experiment")]
+    mod reference_contracts {
+        use super::*;
+        use crate::{native_reference_oracle::NativeTextLookup,
+            native_wire_recipe::{BoundTextExtents, ExtentProvenance},
+            text_slice::{ExtentResolver, TextSlice}};
+        use loro_common::{ContainerID, ContainerType, ID};
+        use std::{io, ops::Range, sync::Arc};
+
+        struct Resolver;
+        impl ExtentResolver for Resolver {
+            fn with_bytes(&self, _: u64, range: Range<usize>, _: &'static str,
+                visit: &mut dyn FnMut(&[u8])) -> io::Result<()> {
+                visit("a玉🙂Z".as_bytes().get(range)
+                    .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?);
+                Ok(())
+            }
+        }
+        struct Lookup { text: TextSlice, missing: bool }
+        impl Lookup {
+            fn new(missing: bool) -> Self {
+                let resolver = Arc::new(Resolver);
+                let mut text = TextSlice::extent(resolver.clone(), 10, 0..2);
+                text.try_merge(&TextSlice::extent(resolver, 11, 2..9)).unwrap();
+                Self { text, missing }
+            }
+        }
+        impl NativeTextLookup for Lookup {
+            fn text_extents(&self, id: ID, cid: &ContainerID, unicode_len: u32, bytes: usize)
+                -> LoroResult<Option<BoundTextExtents>> {
+                let offsets = [0, 1, 4, 8, 9];
+                if self.missing || id.peer != 71 || id.counter < 0
+                    || cid != &ContainerID::new_root("body", ContainerType::Text) {
+                    return Ok(None);
+                }
+                let Some(&start) = offsets.get(id.counter as usize) else { return Ok(None); };
+                let Some(&end) = offsets.get(id.counter as usize + unicode_len as usize) else { return Ok(None); };
+                if end - start != bytes { return Ok(None); }
+                Ok(Some(BoundTextExtents { provenance: ExtentProvenance::OriginalLocal,
+                    parts: vec![self.text.slice_clone(start..end)] }))
+            }
+        }
+        fn source() -> LoroDoc {
+            let source = LoroDoc::new_auto_commit();
+            source.set_peer_id(71).unwrap();
+            source.get_text("body").insert_unicode(0, "a玉🙂Z").unwrap();
+            source.commit_then_renew();
+            source
+        }
+        fn decode(snapshot: Snapshot, target: &LoroDoc, lookup: &Lookup) -> LoroResult<()> {
+            decode_snapshot_inner_impl(snapshot, target, Default::default(), Some(lookup))
+        }
+
+        #[test]
+        fn reference_snapshot_keeps_state_and_history_refs_before_any_getter() {
+            let source = source();
+            source.get_text("body").delete_unicode(0, 1).unwrap();
+            let snapshot = snapshot_sections(&source);
+            let target = LoroDoc::new();
+            crate::text_slice::reset_text_copy_metrics();
+            decode(snapshot, &target, &Lookup::new(false)).unwrap();
+            assert!(crate::text_slice::text_copy_metrics().values()
+                .all(|count| count.native_bytes == 0 && count.extent_bytes == 0));
+            target.check_reference_oracle_base().unwrap();
+            assert!(target.get_deep_value_with_text_slices().unwrap()
+                .same_value(&source.get_deep_value_with_text_slices().unwrap()).unwrap());
+        }
+
+        #[test]
+        fn reference_snapshot_rejects_deleted_history_and_rolls_back() {
+            let source = source();
+            source.get_text("body").delete_unicode(0, 4).unwrap();
+            let target = LoroDoc::new();
+            assert!(decode(snapshot_sections(&source), &target, &Lookup::new(true)).is_err());
+            assert!(target.oplog_vv().is_empty());
+            assert!(target.state_vv().is_empty());
+            assert_eq!(target.get_deep_value(), LoroDoc::new().get_deep_value());
+            // A failed eager build must not leave parsed blocks or state in the
+            // empty target that prevent a subsequent valid construction.
+            decode(snapshot_sections(&source), &target, &Lookup::new(false)).unwrap();
+            target.check_reference_oracle_base().unwrap();
+        }
+
+        #[test]
+        fn reference_snapshot_rejects_unreachable_state_and_corrupt_wrapper() {
+            for corrupt in [false, true] {
+                let source = source();
+                let mut snapshot = snapshot_sections(&source);
+                let state = KvWrapper::new_mem();
+                state.import(snapshot.state_bytes.take().unwrap()).unwrap();
+                let body = ContainerID::new_root("body", ContainerType::Text);
+                let hidden = ContainerID::new_root("unreferenced", ContainerType::Text);
+                let bytes = if corrupt { Bytes::from_static(&[255]) }
+                    else { state.get(&body.to_bytes()).unwrap() };
+                state.insert(&hidden.to_bytes(), bytes);
+                snapshot.state_bytes = Some(state.export());
+                let target = LoroDoc::new();
+                assert!(decode(snapshot, &target, &Lookup::new(false)).is_err());
+                assert!(target.oplog_vv().is_empty());
+                assert!(target.state_vv().is_empty());
+            }
         }
     }
 

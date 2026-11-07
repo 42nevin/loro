@@ -148,6 +148,8 @@ impl LoroDoc {
                 visible_op_count,
                 detached: AtomicBool::new(false),
                 auto_commit: AtomicBool::new(false),
+                #[cfg(feature = "shared_arena_experiment")]
+                oracle_read_only: AtomicBool::new(false),
                 observer: Arc::new(Observer::new(arena.clone())),
                 diff_calculator: Arc::new(
                     lock_group.new_lock(DiffCalculator::new(true), LockKind::DiffCalculator),
@@ -192,6 +194,8 @@ impl LoroDoc {
                     visible_op_count,
                     detached: AtomicBool::new(false),
                     auto_commit: AtomicBool::new(false),
+                    #[cfg(feature = "shared_arena_experiment")]
+                    oracle_read_only: AtomicBool::new(false),
                     observer: Arc::new(Observer::new(arena.clone())),
                     diff_calculator: Arc::new(
                         lock_group.new_lock(DiffCalculator::new(true), LockKind::DiffCalculator),
@@ -997,6 +1001,70 @@ impl LoroDoc {
     pub(crate) fn drop_pending_events(&self) -> Vec<DocDiff> {
         let mut state = self.state.lock();
         state.take_events()
+    }
+
+    #[cfg(feature = "shared_arena_experiment")]
+    pub fn get_deep_value_with_text_slices(&self) -> LoroResult<crate::native_reference_oracle::NativeStateProjection> {
+        self.state.lock().get_deep_value_with_text_slices()
+    }
+
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(crate) fn check_reference_oracle_base(&self) -> LoroResult<()> {
+        if self.get_pending_txn_len() != 0 {
+            return Err(crate::native_reference_oracle::invalid("pending base transaction"));
+        }
+        let oplog = self.oplog.lock();
+        oplog.change_store().check_reference_oracle_base(oplog.vv())?;
+        self.state.lock().store.check_reference_oracle_base()?;
+        Ok(())
+    }
+
+    /// Establish the private oracle lifecycle before any external byte callback.
+    /// Unlike an ordinary document this owner cannot acquire edits, and must be
+    /// releasable after a failed construction without committing through locks.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(crate) fn prepare_reference_oracle(&self) -> LoroResult<()> {
+        if self.get_pending_txn_len() != 0 {
+            return Err(crate::native_reference_oracle::invalid("oracle candidate has pending edits"));
+        }
+        let (_, empty_transaction) = self.implicit_commit_then_stop();
+        self.auto_commit.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.oracle_read_only.store(true, std::sync::atomic::Ordering::Relaxed);
+        drop(empty_transaction);
+        Ok(())
+    }
+
+    /// Eager native oracle construction only; not exposed as a mutable API.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(crate) fn import_reference_updates(
+        &self, wire: &[u8], lookup: &dyn crate::native_reference_oracle::NativeTextLookup,
+    ) -> LoroResult<ImportStatus> {
+        self.prepare_reference_oracle()?;
+        // Only private oracle documents call this method. A late resolver panic
+        // invalidates and discards that private owner; it never escapes into the
+        // caller's base or masquerades as a successful admission.
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.with_barrier(|| {
+            let parsed = parse_header_and_body(wire, true)?;
+            if !matches!(parsed.mode, EncodeMode::FastUpdates) {
+                return Err(crate::native_reference_oracle::invalid("expected native Update"));
+            }
+            let result = self.import_changes_and_apply_delta_to_state_if_needed(|oplog| {
+                let mut reader = parsed.body;
+                let mut changes = Vec::new();
+                while !reader.is_empty() {
+                    let len = usize::try_from(leb128::read::unsigned(&mut reader)
+                        .map_err(|_| crate::native_reference_oracle::invalid("invalid block length"))?)
+                        .map_err(|_| crate::native_reference_oracle::invalid("block length overflow"))?;
+                    let block = reader.get(..len).ok_or_else(|| crate::native_reference_oracle::invalid("truncated native block"))?;
+                    changes.extend(crate::oplog::ChangeStore::decode_block_bytes_with_lookup(block, &oplog.arena, lookup)?);
+                    reader = &reader[len..];
+                }
+                changes.sort_unstable_by_key(|c| c.lamport);
+                Ok(changes)
+            }, ImportedValues::Exact, Default::default());
+            self.emit_events();
+            result
+        }))).unwrap_or_else(|_| Err(crate::native_reference_oracle::invalid("native reference construction panicked")))
     }
 
     /// Import the json schema updates.

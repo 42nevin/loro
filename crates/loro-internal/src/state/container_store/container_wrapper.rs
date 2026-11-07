@@ -800,6 +800,36 @@ impl ContainerWrapper {
         Ok((v, state_offset, decoded_state))
     }
 
+    /// Oracle-only eager decode. The native postcard text stays borrowed and
+    /// each native span must bind to original immutable text before publishing
+    /// this wrapper's state. No lookup survives this call.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(super) fn decode_state_reference(
+        &mut self,
+        idx: ContainerIdx,
+        cid: &ContainerID,
+        ctx: ContainerCreationContext,
+        lookup: &dyn crate::native_reference_oracle::NativeTextLookup,
+    ) -> LoroResult<()> {
+        if self.kind != cid.container_type() {
+            return Err(LoroError::DecodeDataCorruptionError);
+        }
+        if matches!(self.data, ContainerData::State(_)) {
+            return Ok(());
+        }
+        if self.kind != ContainerType::Text {
+            return self.decode_state(idx, ctx);
+        }
+        let (bytes, offset) = self.value_bytes_and_offset()
+            .ok_or(LoroError::DecodeDataCorruptionError)?;
+        let payload = bytes.get(offset..).ok_or(LoroError::DecodeDataCorruptionError)?;
+        let state = RichtextState::decode_snapshot_reference(idx, cid, payload, ctx, lookup)?;
+        self.data = ContainerData::State(state.into());
+        self.in_value_cache_queue = false;
+        self.value_cache_referenced = false;
+        Ok(())
+    }
+
     pub(super) fn decode_state(
         &mut self,
         idx: ContainerIdx,

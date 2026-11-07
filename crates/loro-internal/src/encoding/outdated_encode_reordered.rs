@@ -224,10 +224,46 @@ pub(crate) fn decode_op(
     prop: i32,
     op_id: ID,
 ) -> LoroResult<crate::op::InnerContent> {
+    decode_op_inner(cid, value, del_iter, shared_arena, arenas, positions, prop, op_id,
+        #[cfg(feature = "shared_arena_experiment")]
+        None,
+    )
+}
+
+#[cfg(feature = "shared_arena_experiment")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn decode_op_with_lookup(
+    cid: &ContainerID, value: Value<'_>,
+    del_iter: &mut impl Iterator<Item = Result<EncodedDeleteStartId, ColumnarError>>,
+    shared_arena: &SharedArena, arenas: &dyn ValueDecodedArenasTrait,
+    positions: &[Vec<u8>], prop: i32, op_id: ID,
+    lookup: &dyn crate::native_reference_oracle::NativeTextLookup,
+) -> LoroResult<crate::op::InnerContent> {
+    decode_op_inner(cid, value, del_iter, shared_arena, arenas, positions, prop, op_id, Some(lookup))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_op_inner(
+    cid: &ContainerID, value: Value<'_>,
+    del_iter: &mut impl Iterator<Item = Result<EncodedDeleteStartId, ColumnarError>>,
+    shared_arena: &SharedArena, arenas: &dyn ValueDecodedArenasTrait,
+    positions: &[Vec<u8>], prop: i32, op_id: ID,
+    #[cfg(feature = "shared_arena_experiment")]
+    lookup: Option<&dyn crate::native_reference_oracle::NativeTextLookup>,
+) -> LoroResult<crate::op::InnerContent> {
     let content = match cid.container_type() {
         ContainerType::Text => match value {
             Value::Str(s) => {
-                let (slice, result) = shared_arena.alloc_str_with_slice(s);
+                #[cfg(feature = "shared_arena_experiment")]
+                let referenced = lookup.map(|lookup| shared_arena.alloc_native_text_reference(op_id, cid, s, lookup)).transpose()?;
+                #[cfg(not(feature = "shared_arena_experiment"))]
+                let referenced = None;
+                let (slice, result) = if let Some(reference) = referenced {
+                    reference
+                } else {
+                    crate::text_slice::record_copy("native.decode.text_arena", s.len(), false);
+                    shared_arena.alloc_str_with_slice(s)
+                };
                 crate::op::InnerContent::List(
                     crate::container::list::list_op::InnerListOp::InsertText {
                         slice,

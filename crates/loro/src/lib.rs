@@ -2428,6 +2428,8 @@ pub use loro_internal::extent_restore::{ExtentChangeDescriptor, ExtentOpDescript
 #[cfg(feature = "shared_arena_experiment")]
 pub use loro_internal::native_wire_recipe;
 #[cfg(feature = "shared_arena_experiment")]
+pub mod native_reference_oracle;
+#[cfg(feature = "shared_arena_experiment")]
 pub use loro_internal::native_text_observation;
 pub use loro_internal::text_slice::{ExtentResolver, TextBackingInfo, TextBackingSnapshot, TextSlice};
 #[cfg(feature = "shared_arena_experiment")]
@@ -2482,6 +2484,12 @@ impl LoroDoc {
         &self, span: IdSpan,
     ) -> (Vec<JsonChange>, Vec<native_wire_recipe::NativeTextSlice>) {
         self.doc.export_json_in_id_span_with_text_slices(span)
+    }
+
+    /// Read structural state while retaining original text runs instead of
+    /// allocating String values for text containers.
+    pub fn get_deep_value_with_text_slices(&self) -> LoroResult<native_reference_oracle::NativeStateProjection> {
+        self.doc.get_deep_value_with_text_slices()
     }
 
     /// Restore typed text operations and their original causal metadata from logical extents.

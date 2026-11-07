@@ -8,6 +8,8 @@ pub(crate) mod value_register;
 pub(crate) use outdated_encode_reordered::{
     decode_op, encode_op, get_op_prop, EncodedDeleteStartId, IterableEncodedDeleteStartId,
 };
+#[cfg(feature = "shared_arena_experiment")]
+pub(crate) use outdated_encode_reordered::decode_op_with_lookup;
 use outdated_encode_reordered::{import_changes_to_oplog, ImportChangesResult};
 pub(crate) use value::OwnedValue;
 

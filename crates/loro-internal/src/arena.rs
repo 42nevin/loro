@@ -644,6 +644,16 @@ impl SharedArena {
         Ok(StrAllocResult { start, end: arena.len_unicode() })
     }
 
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(crate) fn alloc_native_text_reference(
+        &self, id: ID, container: &ContainerID, native: &str,
+        lookup: &dyn crate::native_reference_oracle::NativeTextLookup,
+    ) -> loro_common::LoroResult<(BytesSlice, StrAllocResult)> {
+        let slice = crate::native_reference_oracle::bind_native_text(lookup, id, container, native)?;
+        let allocation = self.alloc_verified_text_slice(slice.clone(), native);
+        Ok((slice, allocation))
+    }
+
     /// Adopt backing whose complete bytes the bound importer already compared
     /// with `text`. Index the authenticated input, without another resolver call
     /// under the poisonable string-arena lock. This does not copy payload bytes.

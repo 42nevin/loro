@@ -484,6 +484,61 @@ impl ChangeStore {
         block_encode::annotate_text_spans(bytes)
     }
 
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(crate) fn annotate_text_spans_with_lookup(
+        bytes: &[u8],
+        lookup: &dyn crate::native_reference_oracle::NativeTextLookup,
+    ) -> LoroResult<Vec<crate::native_wire_recipe::NativeTextSpan>> {
+        block_encode::annotate_text_spans_with_lookup(bytes, lookup)
+    }
+
+    /// A borrowed update block, retaining the exact same native grammar and
+    /// parent registration as the ordinary decoder.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(crate) fn decode_block_bytes_with_lookup(
+        bytes: &[u8],
+        arena: &SharedArena,
+        lookup: &dyn crate::native_reference_oracle::NativeTextLookup,
+    ) -> LoroResult<Vec<Change>> {
+        let changes = block_encode::decode_block_with_lookup(bytes, arena, None, lookup)?;
+        for change in &changes {
+            register_container_and_parent_link(arena, change);
+        }
+        Ok(changes)
+    }
+
+    /// This narrow oracle accepts an already resident reference-backed base.
+    /// Inspect metadata only: an omitted/lazy block is a rejected precondition,
+    /// never permission to decode its body with an unrelated incoming lookup.
+    #[cfg(feature = "shared_arena_experiment")]
+    pub(crate) fn check_reference_oracle_base(&self, vv: &VersionVector) -> LoroResult<()> {
+        self.corrupt_block_error()?;
+        let invalid = || LoroError::DecodeError("reference oracle base history is not fully resident".into());
+        let inner = self.inner.lock();
+        if !inner.start_vv.is_empty() { return Err(invalid()); }
+        for (&peer, &end) in vv.iter() {
+            let mut cursor = 0;
+            for (_, block) in inner.mem_parsed_kv.range(ID::new(peer, 0)..ID::new(peer, end)) {
+                if block.counter_range.0 != cursor || block.counter_range.1 > end {
+                    return Err(invalid());
+                }
+                let changes = block.content.try_changes().ok_or_else(invalid)?;
+                for change in changes {
+                    for op in change.ops.iter() {
+                        if let crate::op::InnerContent::List(
+                            crate::container::list::list_op::InnerListOp::InsertText { slice, .. }
+                        ) = &op.content {
+                            if !slice.is_extent() { return Err(invalid()); }
+                        }
+                    }
+                }
+                cursor = block.counter_range.1;
+            }
+            if cursor != end { return Err(invalid()); }
+        }
+        Ok(())
+    }
+
     /// Decode an update block. Changes the doc already has are kept; see
     /// [`Self::decode_snapshot_for_updates`].
     pub(crate) fn decode_block_bytes(bytes: Bytes, arena: &SharedArena) -> LoroResult<Vec<Change>> {
@@ -1112,6 +1167,27 @@ mod mut_external_kv {
     impl ChangeStore {
         #[tracing::instrument(skip_all, level = "debug", name = "change_store import_all")]
         pub(crate) fn import_all(&self, bytes: Bytes) -> Result<BatchDecodeInfo, LoroError> {
+            self.import_all_inner(bytes,
+                #[cfg(feature = "shared_arena_experiment")]
+                None,
+            )
+        }
+
+        #[cfg(feature = "shared_arena_experiment")]
+        pub(crate) fn import_all_with_lookup(
+            &self,
+            bytes: Bytes,
+            lookup: &dyn crate::native_reference_oracle::NativeTextLookup,
+        ) -> LoroResult<BatchDecodeInfo> {
+            self.import_all_inner(bytes, Some(lookup))
+        }
+
+        fn import_all_inner(
+            &self,
+            bytes: Bytes,
+            #[cfg(feature = "shared_arena_experiment")]
+            lookup: Option<&dyn crate::native_reference_oracle::NativeTextLookup>,
+        ) -> Result<BatchDecodeInfo, LoroError> {
             let mut kv_store = self.external_kv.lock();
             assert!(
                 // 2 because there are vv and frontiers
@@ -1125,6 +1201,36 @@ mod mut_external_kv {
                 .import_all(bytes)
                 .map_err(|e| LoroError::DecodeError(e.into_boxed_str()))?;
             drop(kv_store);
+            #[cfg(feature = "shared_arena_experiment")]
+            if let Some(lookup) = lookup {
+                // Do this before get_change resolves the frontiers. A missing
+                // old/deleted operand must fail now, not materialize as heap
+                // text or disappear through an infallible history visitor.
+                let entries: Vec<_> = self.external_kv.lock()
+                    .scan(Bound::Unbounded, Bound::Unbounded)
+                    .filter(|(key, _)| key.len() == 12)
+                    .collect();
+                let mut decoded = Vec::with_capacity(entries.len());
+                for (key, bytes) in entries {
+                    let id = ID::from_bytes(&key);
+                    let mut block = ChangesBlock::from_bytes(bytes)?;
+                    if block.peer != id.peer || block.counter_range.0 != id.counter {
+                        return Err(LoroError::DecodeDataCorruptionError);
+                    }
+                    let ChangesBlockContent::Bytes(bytes) = &block.content else {
+                        return Err(LoroError::DecodeDataCorruptionError);
+                    };
+                    let (changes, bytes) = bytes.parse_with_lookup(&self.arena, lookup)?;
+                    block.retain_parsed_text = changes_retain_parsed_text(&changes);
+                    block.content = ChangesBlockContent::Both(Arc::new(changes), bytes);
+                    block.parsed_extent = self.arena.extent();
+                    decoded.push((id, BlockRef::new(block)));
+                }
+                let mut inner = self.inner.lock();
+                for (id, block) in decoded {
+                    inner.mem_parsed_kv.insert(id, block);
+                }
+            }
             *self.root_history_names.lock() = RootHistoryNamesState::Uninitialized;
             let vv_bytes = self.external_kv.lock().get(VV_KEY).unwrap_or_default();
             let vv = VersionVector::decode(&vv_bytes)
@@ -2343,6 +2449,23 @@ impl ChangesBlockBytes {
         Ok((changes, enriched))
     }
 
+    #[cfg(feature = "shared_arena_experiment")]
+    fn parse_with_lookup(
+        &self,
+        arena: &SharedArena,
+        lookup: &dyn crate::native_reference_oracle::NativeTextLookup,
+    ) -> LoroResult<(Vec<Change>, Self)> {
+        let mut enriched = self.clone();
+        enriched.ensure_header()?;
+        let header = enriched.header.as_mut().ok_or(LoroError::DecodeDataCorruptionError)?;
+        let changes = block_encode::decode_block_with_lookup(
+            &enriched.bytes, arena, Some(Arc::make_mut(header)), lookup)?;
+        for change in &changes {
+            register_container_and_parent_link(arena, change);
+        }
+        Ok((changes, enriched))
+    }
+
     fn serialize(changes: &[Change], a: &SharedArena) -> Self {
         let bytes = encode_block(changes, a);
         let mut bytes = ChangesBlockBytes::new(Bytes::from(bytes));
@@ -3083,6 +3206,47 @@ mod extent_owner_retention_tests {
             visit(&"a玉".as_bytes()[range]);
             Ok(())
         }
+    }
+
+    struct NativeLookup { missing: bool }
+    impl crate::native_reference_oracle::NativeTextLookup for NativeLookup {
+        fn text_extents(&self, id: ID, cid: &ContainerID, unicode_len: u32, byte_len: usize)
+            -> LoroResult<Option<crate::native_wire_recipe::BoundTextExtents>> {
+            if self.missing || id != ID::new(88, 0)
+                || cid != &ContainerID::new_root("body", loro_common::ContainerType::Text)
+                || unicode_len != 2 || byte_len != 4 {
+                return Ok(None);
+            }
+            Ok(Some(crate::native_wire_recipe::BoundTextExtents {
+                provenance: crate::native_wire_recipe::ExtentProvenance::OriginalLocal,
+                parts: vec![TextSlice::extent(Arc::new(Resolver), 1, 0..4)],
+            }))
+        }
+    }
+
+    #[test]
+    fn reference_snapshot_history_eagerly_rebinds_and_missing_lookup_fails() {
+        let source = crate::LoroDoc::new_auto_commit();
+        source.set_peer_id(88).unwrap();
+        source.get_text("body").insert(0, "a玉", crate::cursor::PosType::Unicode).unwrap();
+        source.commit_then_renew();
+        let vv = source.oplog_vv();
+        let frontiers = source.oplog_frontiers();
+        let encoded = source.oplog().lock().change_store().encode_all(&vv, &frontiers);
+        let arena = SharedArena::new();
+        let target = ChangeStore::new_mem(&arena, Arc::new(AtomicI64::new(0)));
+        assert!(target.import_all_with_lookup(encoded.clone(), &NativeLookup { missing: false }).is_ok());
+        let mut text_ops = 0;
+        target.visit_all_changes(&mut |change| for op in change.ops.iter() {
+            if let InnerContent::List(InnerListOp::InsertText { slice, .. }) = &op.content {
+                assert!(slice.is_extent());
+                text_ops += 1;
+            }
+        });
+        assert_eq!(text_ops, 1);
+        target.corrupt_block_error().unwrap();
+        let missing = ChangeStore::new_mem(&SharedArena::new(), Arc::new(AtomicI64::new(0)));
+        assert!(missing.import_all_with_lookup(encoded, &NativeLookup { missing: true }).is_err());
     }
     #[test]
     fn native_wire_export_retains_logical_op_owners() {
