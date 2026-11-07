@@ -24,15 +24,22 @@ impl Store {
         sanakirja::btree::put(&mut txn,&mut db,&SCHEMA_MAGIC_KEY,&SCHEMA_MAGIC)?;
         txn.set_root(2,db.db.into());txn.commit()?;Ok(())
     }
-    /// Read-only admission; legacy/unknown schemas are never upgraded.
-    pub fn require_derived_v1(&self)->Result<()> {
+    /// Absence is distinct from malformed or unsupported derived schema.
+    /// Reads identity metadata only and never initializes an existing store.
+    pub fn derived_schema_version(&self)->Result<Option<u64>> {
         self.owner.counts.reads.fetch_add(1,Ordering::SeqCst);
         let txn=sanakirja::Env::txn_begin(&self.owner.env)?;
         let db=txn.root_db::<u64,u64,sanakirja::btree::page::Page<u64,u64>>(2).ok_or_else(||anyhow::anyhow!("missing identity"))?;
-        for (key,wanted) in [(SCHEMA_KEY,1),(SCHEMA_MAGIC_KEY,SCHEMA_MAGIC)] {
-            let (found,value)=sanakirja::btree::get(&txn,&db,&key,None)?.ok_or_else(||anyhow::anyhow!("missing derived schema v1"))?;
-            ensure!(*found==key && *value==wanted,"incompatible derived schema");
-        }Ok(())
+        let read=|key:u64|->Result<Option<u64>> {Ok(sanakirja::btree::get(&txn,&db,&key,None)?.filter(|(found,_)|**found==key).map(|(_,value)|*value))};
+        match (read(SCHEMA_KEY)?,read(SCHEMA_MAGIC_KEY)?) {
+            (None,None)=>Ok(None),
+            (Some(version),Some(magic)) if magic==SCHEMA_MAGIC=>Ok(Some(version)),
+            _=>Err(anyhow::anyhow!("malformed derived schema marker")),
+        }
+    }
+    /// Read-only strict admission; optional callers can first inspect presence.
+    pub fn require_derived_v1(&self)->Result<()> {
+        ensure!(self.derived_schema_version()?==Some(1),"missing or incompatible derived schema v1");Ok(())
     }
     pub fn derived_put(&mut self,id:u64,bytes:&[u8])->Result<()> {
         self.require_derived_v1()?;

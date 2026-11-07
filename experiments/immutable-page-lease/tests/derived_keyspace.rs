@@ -5,6 +5,7 @@ fn derived_keyspace_does_not_pollute_dense_canonical_ids() {
     let dir=tempfile::tempdir().unwrap();let path=dir.path().join("store");
     let mut store=unsafe {Store::open(&path).unwrap()};
     store.init_derived_v1().unwrap();
+    assert_eq!(store.derived_schema_version().unwrap(),Some(1));
     store.publish(0,b"canonical0",&[]).unwrap();
     store.derived_put(41,b"target-body").unwrap();store.derived_put(42,b"unrelated-body").unwrap();
     store.derived_publish_head(1,b"head1",&[41,42]).unwrap();
@@ -35,7 +36,7 @@ fn derived_schema_refuses_legacy_without_mutating_file() {
     let dir=tempfile::tempdir().unwrap();let path=dir.path().join("store");
     let mut store=unsafe {Store::open(&path).unwrap()};store.publish(0,b"old",&[]).unwrap();drop(store);
     let before=std::fs::read(&path).unwrap();
-    let store=unsafe {Store::open(&path).unwrap()};assert!(store.require_derived_v1().is_err());drop(store);
+    let store=unsafe {Store::open(&path).unwrap()};assert_eq!(store.derived_schema_version().unwrap(),None);assert!(store.require_derived_v1().is_err());drop(store);
     assert_eq!(before,std::fs::read(&path).unwrap());
 }
 
