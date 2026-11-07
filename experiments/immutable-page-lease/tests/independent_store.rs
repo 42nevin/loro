@@ -62,3 +62,31 @@ fn independent_metadata_multiple_pages_and_empty_record() {
     assert_eq!(store.published_ids().unwrap(), vec![1,2]);
     assert_eq!(store.published(1).unwrap().unwrap(), payload);
 }
+
+#[test]
+fn existing_open_and_identity_read_preserve_every_file_byte() {
+    let dir=tempfile::tempdir().unwrap();let path=dir.path().join("existing");
+    let mut store=unsafe {Store::open(&path).unwrap()};
+    store.publish(0,b"old format marker",&[]).unwrap();
+    let identity=store.store_id();drop(store);
+    let before=std::fs::read(&path).unwrap();
+    let store=unsafe {Store::open(&path).unwrap()};
+    assert_eq!(store.store_id(),identity);
+    assert_eq!(store.published(0).unwrap().unwrap(),b"old format marker");
+    drop(store);
+    let after=std::fs::read(&path).unwrap();
+    assert!(before==after,"existing read-only open changed persistent bytes");
+}
+
+#[test]
+fn existing_without_identity_is_rejected_without_initializing_or_growing() {
+    let dir=tempfile::tempdir().unwrap();
+    let path=dir.path().join("no-identity");
+    drop(sanakirja::Env::new(&path,64*4096,2).unwrap());
+    let before=std::fs::read(&path).unwrap();
+    assert!(unsafe {Store::open(&path)}.is_err());
+    assert!(before==std::fs::read(&path).unwrap(),"missing identity caused repair write");
+    let short=dir.path().join("short");std::fs::write(&short,b"unrecognized").unwrap();
+    assert!(unsafe {Store::open(&short)}.is_err());
+    assert_eq!(std::fs::read(&short).unwrap(),b"unrecognized");
+}

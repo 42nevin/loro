@@ -107,9 +107,16 @@ impl Store {
         // Existing files are inode-locked before mapping, catching hardlink and
         // symlink aliases. Fresh creation is serialized by the path lock; the
         // unsafe contract excludes external alias races during initialization.
-        let inode_lock = if path.exists() {
+        let existing = path.exists();
+        let inode_lock = if existing {
             let file = OpenOptions::new().read(true).write(true).open(path)?;
             lock_inode(&file)?;
+            let length = file.metadata()?.len();
+            // Env::new rounds/grows files before validating their header. Every
+            // file created by this wrapper is already at least this size and
+            // page aligned. Refuse malformed existing files before mapping.
+            ensure!(length >= (64 * PAGE) as u64 && length % PAGE as u64 == 0,
+                "existing Store has invalid file length");
             Some(file)
         } else {
             None
@@ -129,9 +136,11 @@ impl Store {
             _path_lock: lock,
             counts: Counters::default(),
         });
-        let store_id;
-        {
-            let mut txn = sanakirja::Env::mut_txn_begin(&owner.env)?;
+        // A mutable transaction copies Sanakirja's active root into its next
+        // root page even when aborted. Existing identity lookup must therefore
+        // use a read transaction, including when format admission later refuses.
+        let existing_id = {
+            let txn = sanakirja::Env::txn_begin(&owner.env)?;
             if let Some(db) = txn.root_db::<u64, u64, sanakirja::btree::page::Page<u64, u64>>(2) {
                 let mut id = [0u8; 16];
                 for key in 0..2u64 {
@@ -141,22 +150,23 @@ impl Store {
                     id[(key as usize) * 8..(key as usize + 1) * 8]
                         .copy_from_slice(&v.to_le_bytes());
                 }
-                store_id = id;
-            } else {
-                let mut id = [0u8; 16];
-                File::open("/dev/urandom")?.read_exact(&mut id)?;
-                let mut db = unsafe { sanakirja::btree::create_db::<_, u64, u64>(&mut txn)? };
-                for key in 0..2u64 {
-                    let v = u64::from_le_bytes(
-                        id[key as usize * 8..(key as usize + 1) * 8].try_into()?,
-                    );
-                    sanakirja::btree::put(&mut txn, &mut db, &key, &v)?;
-                }
-                txn.set_root(2, db.db.into());
-                txn.commit()?;
-                store_id = id;
+                Some(id)
+            } else { None }
+        };
+        let store_id = if let Some(id) = existing_id { id } else {
+            ensure!(!existing, "existing Store has no identity; refusing initialization");
+            let mut txn = sanakirja::Env::mut_txn_begin(&owner.env)?;
+            let mut id = [0u8; 16];
+            File::open("/dev/urandom")?.read_exact(&mut id)?;
+            let mut db = unsafe { sanakirja::btree::create_db::<_, u64, u64>(&mut txn)? };
+            for key in 0..2u64 {
+                let v = u64::from_le_bytes(id[key as usize * 8..(key as usize + 1) * 8].try_into()?);
+                sanakirja::btree::put(&mut txn, &mut db, &key, &v)?;
             }
-        }
+            txn.set_root(2, db.db.into());
+            txn.commit()?;
+            id
+        };
         Ok(Self { owner, store_id })
     }
     pub fn store_id(&self) -> [u8; 16] {
