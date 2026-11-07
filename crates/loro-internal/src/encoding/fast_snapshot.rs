@@ -834,6 +834,12 @@ pub(crate) fn decode_updates_blob_meta(
     let doc = LoroDoc::new();
     let mut oplog = doc.oplog.lock();
     let changes = decode_updates(&mut oplog, parsed.body.to_vec().into())?;
+    Ok(metadata_from_update_changes(&changes))
+}
+
+/// Metadata of the complete decoded wire changes, in native lamport order.
+/// Call before causal import trims operations already known by the target.
+pub(crate) fn metadata_from_update_changes(changes: &[Change]) -> ImportBlobMetadata {
     let mut start_vv = VersionVector::new();
     let mut end_vv = VersionVector::new();
     for c in changes.iter() {
@@ -864,7 +870,7 @@ pub(crate) fn decode_updates_blob_meta(
         }
     }
 
-    Ok(ImportBlobMetadata {
+    ImportBlobMetadata {
         mode: EncodedBlobMode::Updates,
         partial_start_vv: start_vv,
         partial_end_vv: end_vv,
@@ -872,5 +878,5 @@ pub(crate) fn decode_updates_blob_meta(
         start_frontiers,
         end_timestamp: changes.last().map(|x| x.timestamp).unwrap_or(0),
         change_num: changes.len() as u32,
-    })
+    }
 }

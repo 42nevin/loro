@@ -1020,8 +1020,9 @@ impl LoroDoc {
     }
 
     /// Establish the private oracle lifecycle before any external byte callback.
-    /// Unlike an ordinary document this owner cannot acquire edits, and must be
-    /// releasable after a failed construction without committing through locks.
+    /// This is a non-committing Drop policy, not a write-protection capability.
+    /// The private owner must be releasable after a failed construction without
+    /// committing through locks; trusted validation code must not retain edits.
     #[cfg(feature = "shared_arena_experiment")]
     pub(crate) fn prepare_reference_oracle(&self) -> LoroResult<()> {
         if self.get_pending_txn_len() != 0 {
@@ -1038,7 +1039,7 @@ impl LoroDoc {
     #[cfg(feature = "shared_arena_experiment")]
     pub(crate) fn import_reference_updates(
         &self, wire: &[u8], lookup: &dyn crate::native_reference_oracle::NativeTextLookup,
-    ) -> LoroResult<ImportStatus> {
+    ) -> LoroResult<(ImportStatus, crate::encoding::ImportBlobMetadata)> {
         self.prepare_reference_oracle()?;
         // Only private oracle documents call this method. A late resolver panic
         // invalidates and discards that private owner; it never escapes into the
@@ -1048,6 +1049,7 @@ impl LoroDoc {
             if !matches!(parsed.mode, EncodeMode::FastUpdates) {
                 return Err(crate::native_reference_oracle::invalid("expected native Update"));
             }
+            let mut metadata = None;
             let result = self.import_changes_and_apply_delta_to_state_if_needed(|oplog| {
                 let mut reader = parsed.body;
                 let mut changes = Vec::new();
@@ -1060,10 +1062,14 @@ impl LoroDoc {
                     reader = &reader[len..];
                 }
                 changes.sort_unstable_by_key(|c| c.lamport);
+                metadata = Some(crate::encoding::fast_snapshot::metadata_from_update_changes(&changes));
                 Ok(changes)
             }, ImportedValues::Exact, Default::default());
             self.emit_events();
-            result
+            let status = result?;
+            let metadata = metadata.ok_or_else(||
+                crate::native_reference_oracle::invalid("missing decoded Update metadata"))?;
+            Ok((status, metadata))
         }))).unwrap_or_else(|_| Err(crate::native_reference_oracle::invalid("native reference construction panicked")))
     }
 

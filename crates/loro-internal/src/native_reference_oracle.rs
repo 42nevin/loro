@@ -6,7 +6,7 @@ pub use crate::state::reference_state::{
 };
 use loro_common::{ContainerID, IdSpan, LoroError, LoroResult, LoroValue, ID};
 use crate::{
-    encoding::{json_schema::json::{JsonChange, JsonSchema}, parse_header_and_body, EncodeMode},
+    encoding::{json_schema::json::{JsonChange, JsonSchema}, parse_header_and_body, EncodeMode, ImportBlobMetadata, ImportStatus},
     native_wire_recipe::{extent_refs, BoundTextExtents, NativeTextSlice},
     text_slice::TextSlice,
     version::Frontiers,
@@ -46,9 +46,39 @@ pub(crate) fn bind_native_text(
     })).unwrap_or_else(|_| Err(invalid("original text lookup panicked")))
 }
 
-/// A fully built oracle with no mutation or document-extraction interface.
-/// Construction is fallible; successful reads cannot trigger unbound decoding.
-pub struct NativeReferenceOracle { doc: LoroDoc }
+/// A fully built native oracle. Ordinary access is read-only; the explicitly
+/// trusted validation extension below is an application integration boundary,
+/// not capability isolation for untrusted code.
+pub struct NativeReferenceOracle {
+    doc: LoroDoc,
+    update_status: Option<ImportStatus>,
+    update_metadata: Option<ImportBlobMetadata>,
+}
+
+#[derive(PartialEq, Eq)]
+struct ValidationFence {
+    oplog_vv: VersionVector,
+    state_vv: VersionVector,
+    oplog_frontiers: Frontiers,
+    state_frontiers: Frontiers,
+    pending: usize,
+    detached: bool,
+    detached_editing: bool,
+    peer: u64,
+    auto_commit: bool,
+}
+impl ValidationFence {
+    fn capture(doc: &LoroDoc) -> Self {
+        Self {
+            pending: doc.get_pending_txn_len(),
+            oplog_vv: doc.oplog_vv(), state_vv: doc.state_vv(),
+            oplog_frontiers: doc.oplog_frontiers(), state_frontiers: doc.state_frontiers(),
+            detached: doc.is_detached(), detached_editing: doc.is_detached_editing_enabled(),
+            peer: doc.peer_id(),
+            auto_commit: doc.auto_commit.load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+}
 impl NativeReferenceOracle {
     /// The base must already be fully built. It is isolated through native COW;
     /// incoming bytes are decoded independently with exact native semantics.
@@ -58,12 +88,12 @@ impl NativeReferenceOracle {
     pub(crate) fn from_update_lookup(base: &LoroDoc, wire: &[u8], lookup: &dyn NativeTextLookup) -> LoroResult<Self> {
         base.check_reference_oracle_base()?;
         let doc = base.fork_cow()?;
-        let status = doc.import_reference_updates(wire, lookup)?;
+        let (status, metadata) = doc.import_reference_updates(wire, lookup)?;
         if status.pending.is_some() || doc.state_vv() != doc.oplog_vv() {
             return Err(invalid("unresolved native dependencies"));
         }
         doc.check_reference_oracle_base()?;
-        Ok(Self { doc })
+        Ok(Self { doc, update_status: Some(status), update_metadata: Some(metadata) })
     }
     pub fn from_snapshot(wire: &[u8], lookup: Arc<dyn NativeTextLookup>) -> LoroResult<Self> {
         Self::from_snapshot_with_config(&LoroDoc::new(), wire, lookup)
@@ -88,8 +118,46 @@ impl NativeReferenceOracle {
         }))).map_err(|_| invalid("native snapshot reference construction panicked"))??;
         if doc.state_vv() != doc.oplog_vv() { return Err(invalid("unsettled native snapshot")); }
         doc.check_reference_oracle_base()?;
-        Ok(Self { doc })
+        Ok(Self { doc, update_status: None, update_metadata: None })
     }
+    /// Consume this owner while fixed, trusted application code runs its
+    /// existing validation against the private native document and the actual
+    /// Update import status. No status is synthesized for snapshot constructors.
+    ///
+    /// The callback must not mutate, clone, retain handles, or export an encoded
+    /// document. Borrowed history and container identity reads are allowed.
+    /// LoroDoc has interior mutability: the before/after fence detects the listed
+    /// state changes, but cannot prevent escaped aliases, configuration changes,
+    /// or mutation followed by restoration. This is NOT an untrusted sandbox.
+    /// Error, panic, or drift discards the oracle and callback result normally;
+    /// poisoned candidate locks are never recovered or reused.
+    pub fn trusted_validation<T, E: From<LoroError>>(
+        self,
+        callback: impl FnOnce(&LoroDoc, &ImportStatus) -> Result<T, E>,
+    ) -> Result<(Self, T), E> {
+        let status = self.update_status.as_ref()
+            .ok_or_else(|| E::from(invalid("trusted validation requires a real Update status")))?;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let before = ValidationFence::capture(&self.doc);
+            if before.pending != 0 || before.detached || before.oplog_vv != before.state_vv {
+                return Err(E::from(invalid("unsettled trusted validation candidate")));
+            }
+            let value = callback(&self.doc, status)?;
+            if before != ValidationFence::capture(&self.doc) {
+                return Err(E::from(invalid("trusted validation changed candidate state")));
+            }
+            Ok(value)
+        }));
+        match outcome {
+            Ok(Ok(value)) => Ok((self, value)),
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err(E::from(invalid("trusted validation panicked"))),
+        }
+    }
+
+    /// Exact incoming Update metadata, before known-history trimming. Snapshots
+    /// do not synthesize an Update span from their final document version.
+    pub fn update_metadata(&self) -> Option<&ImportBlobMetadata> { self.update_metadata.as_ref() }
     pub fn oplog_vv(&self) -> VersionVector { self.doc.oplog_vv() }
     pub fn state_vv(&self) -> VersionVector { self.doc.state_vv() }
     pub fn oplog_frontiers(&self) -> Frontiers { self.doc.oplog_frontiers() }
@@ -106,6 +174,6 @@ impl NativeReferenceOracle {
     pub fn get_deep_value_with_text_slices(&self) -> LoroResult<NativeStateProjection> {
         self.doc.get_deep_value_with_text_slices()
     }
-    pub fn get_pending_txn_len(&self) -> usize { 0 }
+    pub fn get_pending_txn_len(&self) -> usize { self.doc.get_pending_txn_len() }
     pub fn get_deep_value(&self) -> LoroValue { self.doc.get_deep_value() }
 }

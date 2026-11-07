@@ -1729,6 +1729,17 @@ pub trait ContainerTrait: SealedTrait {
     fn is_deleted(&self) -> bool;
     /// Get the doc of the container.
     fn doc(&self) -> Option<LoroDoc>;
+    /// Whether this container belongs to the exact document owner.
+    ///
+    /// Unlike [`Self::doc`], this identity check does not enable auto-commit or
+    /// open a transaction. A reference clone is the same owner, while a fork is
+    /// not, even when its container IDs and versions match. Detached containers
+    /// return false. Deletion does not change the owning document.
+    fn is_attached_to(&self, doc: &LoroDoc) -> bool {
+        self.to_handler()
+            .doc()
+            .is_some_and(|owner| Arc::ptr_eq(owner.oplog(), doc.doc.oplog()))
+    }
     /// Subscribe to the container.
     ///
     /// If the Container is detached, this method will return `None`.

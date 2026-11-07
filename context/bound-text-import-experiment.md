@@ -120,9 +120,10 @@ claim arbitrary mutable documents are zero-copy bases.
 
 Snapshot construction uses the separate eager snapshot path: all native history
 and state are decoded and validated before returning. No borrowed lookup is
-retained for future lazy work. The resulting wrapper exposes only version,
-frontier, change metadata, borrowed typed-history and deep-value reads; it cannot
-be converted to a document or used to edit, import, export or fork. Explicit
+retained for future lazy work. The ordinary wrapper interface exposes version,
+frontier, change metadata, borrowed typed-history and deep-value reads, without
+a document-extraction method. The explicitly trusted application callback below
+is a separate extension of this boundary, not a hard read-only capability. Explicit
 deep-value reads may allocate their requested text output. The existing snapshot
 transport requires an owned encoded body buffer; that actual copy is charged to
 `oracle.snapshot.encoded_body`, independently of decoded text ownership.
@@ -156,3 +157,42 @@ without attempting a commit through poisoned locks; the locks are neither
 recovered nor reused, and its allocations/resolver owners are released. Normal
 mutable documents keep their existing commit-on-drop behavior. The late-resolver
 panic regression also checks that the failed candidate releases its resolver.
+
+
+## Trusted application validation extension
+
+`NativeReferenceOracle::trusted_validation` consumes the owner and synchronously
+runs fixed application validation with `&LoroDoc` and the exact `ImportStatus`
+returned by its native Update import. Snapshot constructors retain no Update
+status and reject this extension; no range is guessed from the final VV. The
+callback's generic application error is preserved. The oracle and its result
+are returned only if the callback succeeds and before/after operation/state
+versions, frontiers, pending length, detached mode, detached-editing flag, peer
+identity and auto-commit state match. Errors, panics and state drift discard the
+private candidate/result with the existing non-committing disposal lifecycle.
+
+This is a trusted-code integration contract, not a sandbox or hard capability
+boundary. The callback must not edit, export an encoded document, clone or retain
+a Doc/handle. Borrowed history reads do not emit an encoded document.
+`&LoroDoc` has interior mutability, so fences cannot prevent escaped aliases,
+configuration changes, mutation followed by restoration, or later writes through
+saved aliases. The executable negative control demonstrates these limitations:
+a clone and timestamp-recording change pass the fence, and the saved clone can
+subsequently write. Pending-length getters read real state rather than hiding
+such violations behind a constant zero. Do not expose this extension to arbitrary
+plugins or describe the negative control as a security guarantee.
+
+Container ownership checks use `ContainerTrait::is_attached_to`, which compares
+the exact native owner without enabling auto-commit. The existing `doc()` accessor
+enables auto-commit for ordinary editing and therefore changes a private oracle's
+lifecycle even if no text is edited. The validation fence continues to reject
+that change; it is not reset or ignored after the callback.
+
+Update oracles also retain the exact incoming blob metadata from their native
+decode, before causal import trims already-known operations. The ordinary
+metadata decoder and this path share the same reduction of sorted decoded
+changes. `update_metadata()` therefore describes the wire's peer spans,
+dependencies, timestamps and change count, not the candidate's final version or
+the import's newly applied subset. Snapshot oracles return `None`. This lets
+the application keep every original span check without invoking the ordinary
+metadata API's second, text-owning decode.
