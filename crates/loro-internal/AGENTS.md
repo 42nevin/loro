@@ -128,3 +128,5 @@ coverage under `crates/fuzz` and ask before running long fuzz targets.
 - Direct owned extent views, diagnostics and single-page limits: [../../context/s-direct-page-ownership.md](../../context/s-direct-page-ownership.md).
 - Test-only C2 disk-backed history attachment and unchanged external import trust:
   [../../context/c2-trusted-disk-history-experiment.md](../../context/c2-trusted-disk-history-experiment.md).
+- Feature-gated trusted history backing/capture and failure-marker Drop semantics:
+  [../../context/trusted-history-api-experiment.md](../../context/trusted-history-api-experiment.md).

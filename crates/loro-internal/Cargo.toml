@@ -88,6 +88,7 @@ doctest = false
 bench = false
 
 [features]
+trusted_history_experiment = []
 shared_arena_experiment = []
 # "wasm" will use utf-16 index by default when using text related stuff; But it'll use utf-8 encoding internally.
 wasm = ["wasm-bindgen", "js-sys", "loro-common/wasm"]

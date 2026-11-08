@@ -224,10 +224,10 @@ impl OpLog {
 
     /// Test-only C2 seam. Caller owns a fresh isolated document and discards it
     /// on any storage fault; this is not an external import or public API.
-    #[cfg(test)]
-    pub(crate) fn attach_trusted_test_backing(&mut self, kv: Arc<Mutex<dyn crate::kv_store::KvStore>>) -> Result<(), LoroError> {
+    #[cfg(any(test, feature = "trusted_history_experiment"))]
+    pub(crate) fn attach_trusted_history_backing(&mut self, kv: Arc<Mutex<dyn crate::kv_store::KvStore>>) -> Result<(), LoroError> {
         assert!(self.is_empty());
-        let store = ChangeStore::with_trusted_test_backing(&self.arena, self.configure.merge_interval_in_s.clone(), kv);
+        let store = ChangeStore::with_trusted_history_backing(&self.arena, self.configure.merge_interval_in_s.clone(), kv);
         self.arena.set_creator_resolver(store.creator_resolver());
         self.history_cache = Mutex::new(ContainerHistoryCache::new(store.clone(), None));
         self.dag = AppDag::new(store.clone());

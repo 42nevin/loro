@@ -282,7 +282,7 @@ fn open(dir: &Path) -> (LoroDoc, DiskKv, Capture) {
         state_owner.check_before_decode_snapshot().unwrap();
         assert!(state_owner.frontiers.is_empty());
         oplog
-            .attach_trusted_test_backing(Arc::new(Mutex::new(kv.clone())))
+            .attach_trusted_history_backing(Arc::new(Mutex::new(kv.clone())))
             .unwrap();
         state_owner.store.decode(state).unwrap();
         state_owner

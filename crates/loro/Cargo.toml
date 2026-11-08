@@ -43,6 +43,7 @@ name = "native_cow_history_work"
 required-features = ["test_utils"]
 
 [features]
+trusted_history_experiment = ["loro-internal/trusted_history_experiment"]
 shared_arena_experiment = ["loro-internal/shared_arena_experiment"]
 test_utils = ["loro-internal/test_utils"]
 default = ["counter"]

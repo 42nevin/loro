@@ -157,6 +157,8 @@ impl std::ops::Deref for LoroDoc {
 }
 
 pub struct LoroDocInner {
+    #[cfg(feature = "trusted_history_experiment")]
+    trusted_history_failed: Arc<AtomicBool>,
     oplog: Arc<LoroMutex<OpLog>>,
     state: Arc<LoroMutex<DocState>>,
     arena: SharedArena,
@@ -193,8 +195,13 @@ pub const LORO_VERSION: &str = include_str!("../VERSION");
 
 impl Drop for LoroDoc {
     fn drop(&mut self) {
+        #[cfg(feature = "trusted_history_experiment")]
+        if self.trusted_history_failed.load(std::sync::atomic::Ordering::Acquire) { return; }
         if Arc::strong_count(&self.inner) == 1 {
             let _ = self.implicit_commit_then_stop();
         }
     }
 }
+
+#[cfg(feature = "trusted_history_experiment")]
+pub mod trusted_history;

@@ -29,6 +29,12 @@ pub trait KvStore: std::fmt::Debug + Send + Sync {
         self.import_all(bytes)
     }
     fn clone_store(&self) -> Arc<Mutex<dyn KvStore>>;
+    #[cfg(feature = "trusted_history_experiment")]
+    fn trusted_history_capture(&self) -> Option<Vec<(Vec<u8>, crate::trusted_history::HistoryValue)>> { None }
+    #[cfg(feature = "trusted_history_experiment")]
+    fn trusted_history_failure(&self) -> Option<String> { None }
+    #[cfg(feature = "trusted_history_experiment")]
+    fn trusted_history_failure_marker(&self) -> Option<Arc<crate::sync::AtomicBool>> { None }
 }
 
 fn get_common_prefix_len_and_strip<'a, T: AsRef<[u8]> + ?Sized>(

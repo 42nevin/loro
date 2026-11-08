@@ -47,3 +47,5 @@ schema, and validation entry points.
   boundary: [../../../../context/bound-text-import-experiment.md](../../../../context/bound-text-import-experiment.md).
 - Test-only trusted disk history restore and storage failure isolation:
   [../../../../context/c2-trusted-disk-history-experiment.md](../../../../context/c2-trusted-disk-history-experiment.md).
+- Opt-in trusted local history API (not an external snapshot importer):
+  [../../../../context/trusted-history-api-experiment.md](../../../../context/trusted-history-api-experiment.md).

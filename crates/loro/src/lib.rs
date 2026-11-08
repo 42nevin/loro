@@ -4152,3 +4152,17 @@ impl UndoManager {
 /// The returned cursors will be recorded for a new pushed undo item.
 pub type OnPush =
     Box<dyn for<'a> Fn(UndoOrRedo, CounterSpan, Option<DiffEvent>) -> UndoItemMeta + Send + Sync>;
+
+#[cfg(feature = "trusted_history_experiment")]
+pub use loro_internal::trusted_history::{guard_trusted_history, HistoryEntry, HistoryValue, TrustedHistoryCapture, TrustedHistoryError, TrustedHistorySource};
+#[cfg(feature = "trusted_history_experiment")]
+impl LoroDoc {
+    /// Experimental trusted local restore. The source must verify immutable root-bound bytes.
+    pub fn open_trusted_history(state: &[u8], entries: Vec<HistoryEntry>, source: std::sync::Arc<dyn TrustedHistorySource>) -> Result<Self, TrustedHistoryError> {
+        Ok(Self::_new(InnerLoroDoc::open_trusted_history(state, entries, source)?))
+    }
+    /// Experimental current state + exact modified history objects. Guard and discard failed candidates.
+    pub fn capture_trusted_history(&self) -> Result<TrustedHistoryCapture, TrustedHistoryError> {
+        self.doc.capture_trusted_history()
+    }
+}

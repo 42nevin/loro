@@ -142,6 +142,8 @@ impl LoroDoc {
         let inner = Arc::new_cyclic(|w| {
             let state = DocState::new_arc(w.clone(), arena.clone(), config.clone(), &lock_group);
             LoroDocInner {
+                #[cfg(feature = "trusted_history_experiment")]
+                trusted_history_failed: oplog.change_store().trusted_history_failure_marker().unwrap_or_default(),
                 oplog: Arc::new(lock_group.new_lock(oplog, LockKind::OpLog)),
                 state,
                 config,
@@ -166,6 +168,10 @@ impl LoroDoc {
     /// Native immutable-payload branch of an attached, settled document.
     /// No export/import, subscriptions, mutable config, or read caches cross owners.
     pub fn fork_cow(&self) -> LoroResult<Self> {
+        #[cfg(feature = "trusted_history_experiment")]
+        if self.trusted_history_failed.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(LoroError::DecodeError("discard failed trusted history candidate".into()));
+        }
         self.with_barrier(|| {
             if self.is_detached() {
                 return Err(LoroError::TransactionError(
@@ -186,6 +192,8 @@ impl LoroDoc {
                     source_state.fork_cow(w.clone(), arena.clone(), config.clone(), &lock_group);
                 oplog.set_fork_root(&state.lock());
                 LoroDocInner {
+                #[cfg(feature = "trusted_history_experiment")]
+                trusted_history_failed: oplog.change_store().trusted_history_failure_marker().unwrap_or_default(),
                     oplog: Arc::new(lock_group.new_lock(oplog, LockKind::OpLog)),
                     state,
                     config,
@@ -3642,6 +3650,8 @@ pub struct CommitWhenDrop<'a> {
 
 impl Drop for CommitWhenDrop<'_> {
     fn drop(&mut self) {
+        #[cfg(feature = "trusted_history_experiment")]
+        if self.doc.trusted_history_failed.load(std::sync::atomic::Ordering::Acquire) { return; }
         {
             let mut guard = self.doc.txn.lock();
             if let Some(txn) = guard.as_mut() {

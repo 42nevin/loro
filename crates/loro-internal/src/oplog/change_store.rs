@@ -332,8 +332,8 @@ impl ChangeStore {
     }
 
     /// Test-only trusted local backing, not an untrusted snapshot import API.
-    #[cfg(test)]
-    pub(crate) fn with_trusted_test_backing(a: &SharedArena, merge_interval: Arc<AtomicI64>, kv: Arc<Mutex<dyn KvStore>>) -> Self {
+    #[cfg(any(test, feature = "trusted_history_experiment"))]
+    pub(crate) fn with_trusted_history_backing(a: &SharedArena, merge_interval: Arc<AtomicI64>, kv: Arc<Mutex<dyn KvStore>>) -> Self {
         let mut store = Self::new_mem(a, merge_interval);
         store.external_kv = kv;
         store
@@ -1737,6 +1737,10 @@ mod mut_inner_kv {
         /// `Err` once a read of this store has hit a block it cannot decode or parse. See
         /// [`ParseFailures`].
         pub(crate) fn corrupt_block_error(&self) -> LoroResult<()> {
+            #[cfg(feature = "trusted_history_experiment")]
+            if let Some(error) = self.external_kv.lock().trusted_history_failure() {
+                return Err(LoroError::DecodeError(format!("unusable trusted history candidate: {error}").into_boxed_str()));
+            }
             match &*self.parse_failures.first.lock() {
                 None => Ok(()),
                 Some((block_id, err)) => Err(LoroError::DecodeError(
@@ -3128,5 +3132,21 @@ mod extent_owner_retention_tests {
         assert!(
             matches!(&op.content,InnerContent::List(InnerListOp::InsertText {slice,..}) if slice.is_extent())
         );
+    }
+}
+
+#[cfg(feature = "trusted_history_experiment")]
+impl ChangeStore {
+    pub(crate) fn trusted_history_failure_marker(&self) -> Option<Arc<crate::sync::AtomicBool>> {
+        self.external_kv.lock().trusted_history_failure_marker()
+    }
+    pub(crate) fn capture_trusted_history(&self, vv: &VersionVector, frontiers: &Frontiers) -> LoroResult<(Vec<(Vec<u8>, crate::trusted_history::HistoryValue)>, bool)> {
+        self.corrupt_block_error()?;
+        self.flush_and_compact(vv, frontiers);
+        let store = self.external_kv.lock();
+        if let Some(entries) = store.trusted_history_capture() { return Ok((entries, false)); }
+        let entries = store.scan(Bound::Unbounded, Bound::Unbounded)
+            .map(|(key, value)| (key.to_vec(), crate::trusted_history::HistoryValue::Written(value.to_vec()))).collect();
+        Ok((entries, true))
     }
 }

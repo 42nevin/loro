@@ -149,6 +149,8 @@ pub(crate) type OnCommitFn =
     Box<dyn FnOnce(&Arc<LoroMutex<DocState>>, &Arc<LoroMutex<OpLog>>, IdSpan) + Sync + Send>;
 
 pub struct Transaction {
+    #[cfg(feature = "trusted_history_experiment")]
+    trusted_history_failed: Arc<crate::sync::AtomicBool>,
     peer: PeerID,
     origin: InternalString,
     start_counter: Counter,
@@ -407,6 +409,8 @@ impl Transaction {
         drop(state_lock);
         drop(oplog_lock);
         Ok(Self {
+            #[cfg(feature = "trusted_history_experiment")]
+            trusted_history_failed: doc.trusted_history_failed.clone(),
             peer,
             doc: Arc::downgrade(&doc),
             arena,
@@ -1029,6 +1033,8 @@ impl Transaction {
 impl Drop for Transaction {
     #[tracing::instrument(level = "debug", skip(self))]
     fn drop(&mut self) {
+        #[cfg(feature = "trusted_history_experiment")]
+        if self.trusted_history_failed.load(std::sync::atomic::Ordering::Acquire) { return; }
         if !self.finished {
             // TODO: should we abort here or commit here?
             // what if commit fails?
