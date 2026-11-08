@@ -222,6 +222,22 @@ impl OpLog {
         }
     }
 
+    /// Test-only C2 seam. Caller owns a fresh isolated document and discards it
+    /// on any storage fault; this is not an external import or public API.
+    #[cfg(test)]
+    pub(crate) fn attach_trusted_test_backing(&mut self, kv: Arc<Mutex<dyn crate::kv_store::KvStore>>) -> Result<(), LoroError> {
+        assert!(self.is_empty());
+        let store = ChangeStore::with_trusted_test_backing(&self.arena, self.configure.merge_interval_in_s.clone(), kv);
+        self.arena.set_creator_resolver(store.creator_resolver());
+        self.history_cache = Mutex::new(ContainerHistoryCache::new(store.clone(), None));
+        self.dag = AppDag::new(store.clone());
+        self.change_store = store;
+        let version = self.change_store.initialize_imported_metadata()?;
+        self.dag.set_version_by_fast_snapshot_import(version);
+        self.refresh_visible_op_count();
+        Ok(())
+    }
+
     #[inline]
     fn calc_visible_op_count(&self) -> usize {
         let total = self.dag.vv().values().sum::<i32>() as usize;

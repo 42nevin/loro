@@ -720,3 +720,6 @@ pub(crate) fn decode_updates_blob_meta(
         change_num: changes.len() as u32,
     })
 }
+
+#[cfg(test)]
+mod c2_disk_tests;

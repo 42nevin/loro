@@ -331,6 +331,14 @@ impl ChangeStore {
         }
     }
 
+    /// Test-only trusted local backing, not an untrusted snapshot import API.
+    #[cfg(test)]
+    pub(crate) fn with_trusted_test_backing(a: &SharedArena, merge_interval: Arc<AtomicI64>, kv: Arc<Mutex<dyn KvStore>>) -> Self {
+        let mut store = Self::new_mem(a, merge_interval);
+        store.external_kv = kv;
+        store
+    }
+
     #[cfg(test)]
     fn new_for_test() -> Self {
         Self::new_mem(&SharedArena::new(), Arc::new(AtomicI64::new(0)))
@@ -1125,6 +1133,12 @@ mod mut_external_kv {
                 .import_all(bytes)
                 .map_err(|e| LoroError::DecodeError(e.into_boxed_str()))?;
             drop(kv_store);
+            self.initialize_imported_metadata()
+        }
+
+        // Shared post-import metadata initialization. The ordinary import above
+        // still validates every SSTable block before reaching this function.
+        pub(crate) fn initialize_imported_metadata(&self) -> Result<BatchDecodeInfo, LoroError> {
             *self.root_history_names.lock() = RootHistoryNamesState::Uninitialized;
             let vv_bytes = self.external_kv.lock().get(VV_KEY).unwrap_or_default();
             let vv = VersionVector::decode(&vv_bytes)

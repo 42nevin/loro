@@ -156,3 +156,5 @@ linked issues or traces when relevant.
   boundary and copy accounting: [context/bound-text-import-experiment.md](context/bound-text-import-experiment.md).
 
 - Direct owned extent views and Sanakirja lease/publication qualification: [context/s-direct-page-ownership.md](context/s-direct-page-ownership.md).
+- Test-only trusted disk history attachment, measured lazy reads, and isolated
+  storage-fault boundary: [context/c2-trusted-disk-history-experiment.md](context/c2-trusted-disk-history-experiment.md).
