@@ -130,3 +130,5 @@ coverage under `crates/fuzz` and ask before running long fuzz targets.
   [../../context/c2-trusted-disk-history-experiment.md](../../context/c2-trusted-disk-history-experiment.md).
 - Feature-gated trusted history backing/capture and failure-marker Drop semantics:
   [../../context/trusted-history-api-experiment.md](../../context/trusted-history-api-experiment.md).
+
+- Latest-state VV lookup and qualification: [../../context/current-state-vv-shortcut.md](../../context/current-state-vv-shortcut.md).

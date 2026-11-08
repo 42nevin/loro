@@ -1,0 +1,4 @@
+8badfab42ff2ead7bb5b37306a0c2a16e6702ff6a55c6c048ae6e585fa6c4fac  crates/loro-internal/src/loro.rs
+78f7a890fd308ba49e77225b75396ff2e7cbf1cfcf04b41a27697908cca0678d  crates/loro/tests/trusted_history_capture.rs
+8858256958db738e4b9577825604f1fd31ca1ffde076081c8b39554e179e958d  /workspace/scratch/41cd6b51565e/cow-bc-redo/target/x86_64-unknown-linux-gnu/debug/deps/trusted_history_capture-c89e13f77eda5af2
+c1700ab3ec618828ccb982bf06cb22d425e663cae6de47cb7a866b45c412b317  /workspace/scratch/41cd6b51565e/cow-bc-redo/target/x86_64-unknown-linux-gnu/debug/deps/loro_internal-a38bfeba5f51c668

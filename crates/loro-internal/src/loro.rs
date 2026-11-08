@@ -1182,7 +1182,14 @@ impl LoroDoc {
     pub fn state_vv(&self) -> VersionVector {
         let oplog = self.oplog.lock();
         let f = &self.state.lock().frontiers;
-        oplog.dag.frontiers_to_vv(f).unwrap()
+        // For the latest state, the OpLog already owns this version vector.
+        // Avoid walking historical DAG blocks merely to reconstruct it.
+        // Historical/detached frontiers still require the original DAG lookup.
+        if f == oplog.frontiers() {
+            oplog.vv().clone()
+        } else {
+            oplog.dag.frontiers_to_vv(f).unwrap()
+        }
     }
 
     pub fn get_by_path(&self, path: &[Index]) -> Option<ValueOrHandler> {

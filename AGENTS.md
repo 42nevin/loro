@@ -160,3 +160,5 @@ linked issues or traces when relevant.
   storage-fault boundary: [context/c2-trusted-disk-history-experiment.md](context/c2-trusted-disk-history-experiment.md).
 - Opt-in trusted current-state/history API, incremental Written/Retained capture,
   and failed-candidate disposal: [context/trusted-history-api-experiment.md](context/trusted-history-api-experiment.md).
+
+- Latest-state VV lookup and original-DAG regression evidence: [context/current-state-vv-shortcut.md](context/current-state-vv-shortcut.md).
