@@ -1,0 +1,58 @@
+[
+  {
+    "arm": "shallow",
+    "boundary": "Frontiers([1@17])",
+    "case": "deleted_character_anchor",
+    "compact_bytes": 343,
+    "cow_accepted_unchanged": true,
+    "full_bytes": 668,
+    "new_full_owner_matches_independent_oracle": true,
+    "new_undo_redo": true,
+    "old_update_rejected": true,
+    "pre_root_checkout_rejected": true,
+    "same_object_backfilled": false,
+    "true_lazy_history": false
+  },
+  {
+    "arm": "state_only",
+    "boundary": "Frontiers([1@17])",
+    "case": "deleted_character_anchor",
+    "compact_bytes": 342,
+    "cow_accepted_unchanged": true,
+    "full_bytes": 668,
+    "new_full_owner_matches_independent_oracle": true,
+    "new_undo_redo": true,
+    "old_update_rejected": true,
+    "pre_root_checkout_rejected": true,
+    "same_object_backfilled": false,
+    "true_lazy_history": false
+  },
+  {
+    "arm": "shallow",
+    "boundary": "Frontiers([1@17])",
+    "case": "deleted_nested_text",
+    "compact_bytes": 343,
+    "cow_accepted_unchanged": true,
+    "full_bytes": 668,
+    "new_full_owner_matches_independent_oracle": true,
+    "new_undo_redo": true,
+    "old_update_rejected": true,
+    "pre_root_checkout_rejected": true,
+    "same_object_backfilled": false,
+    "true_lazy_history": false
+  },
+  {
+    "arm": "state_only",
+    "boundary": "Frontiers([1@17])",
+    "case": "deleted_nested_text",
+    "compact_bytes": 342,
+    "cow_accepted_unchanged": true,
+    "full_bytes": 668,
+    "new_full_owner_matches_independent_oracle": true,
+    "new_undo_redo": true,
+    "old_update_rejected": true,
+    "pre_root_checkout_rejected": true,
+    "same_object_backfilled": false,
+    "true_lazy_history": false
+  }
+]
