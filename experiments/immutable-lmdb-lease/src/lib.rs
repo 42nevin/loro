@@ -13,7 +13,7 @@ pub page:u64,pub len:usize}
 pub struct Metrics {pub resolutions:u64,pub read_transactions:u64,pub private_commits:u64,pub public_commits:u64,pub initialized_page_bytes:u64,pub producer_rebindings:u64}
 #[derive(Default)]
 struct Counts {resolutions:AtomicU64,reads:AtomicU64,private:AtomicU64,public:AtomicU64,initialized:AtomicU64,rebindings:AtomicU64}
-struct Owner {env:Env<WithoutTls>,db:Database<Bytes,Bytes>,_lock:File,identity:[u8;16],counts:Counts}
+struct Owner {env:Env<WithoutTls>,db:Database<Bytes,Bytes>,churn_db:Database<Bytes,Bytes>,_lock:File,identity:[u8;16],counts:Counts}
 struct Lease { _txn:Mutex<RoTxn<'static,WithoutTls>>, _owner:Arc<Owner>, ptr:NonNull<u8>,len:usize }
 // NOTLS permits moving the owned transaction. No operation is performed on it
 // after construction; Mutex provides Sync without claiming RoTxn itself is Sync.
@@ -35,19 +35,22 @@ pub unsafe fn open(path:&Path)->Result<Self> {
  let lock=std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path.with_extension("lease-lock"))?;
  fs2::FileExt::try_lock_exclusive(&lock)?;
  std::fs::create_dir_all(path)?;
- let mut opts=EnvOpenOptions::new().read_txn_without_tls();opts.map_size(MAP_SIZE).max_dbs(1).max_readers(32768);
+ let mut opts=EnvOpenOptions::new().read_txn_without_tls();opts.map_size(MAP_SIZE).max_dbs(2).max_readers(32768);
  let existed=path.join("data.mdb").exists();
  let env=unsafe {opts.open(path)?};
- let (db,identity)=if existed {
+ let (db,churn_db,identity)=if existed {
    let txn=env.read_txn()?;
    let db:Database<Bytes,Bytes>=env.open_database(&txn,Some("immutable-objects-v1"))?.ok_or_else(||anyhow::anyhow!("unsupported existing store"))?;
    let bytes=db.get(&txn,b"identity-v1")?.ok_or_else(||anyhow::anyhow!("missing store identity"))?;
-   ensure!(bytes.len()==16,"malformed identity");(db,bytes.try_into().unwrap())
+   ensure!(bytes.len()==16,"malformed identity");
+   let churn_db=env.open_database(&txn,Some("diagnostic-unrelated"))?.ok_or_else(||anyhow::anyhow!("missing diagnostic database"))?;
+   let identity=bytes.try_into().unwrap();txn.commit()?;
+   (db,churn_db,identity)
  } else {
    let mut txn=env.write_txn()?;let db:Database<Bytes,Bytes>=env.create_database(&mut txn,Some("immutable-objects-v1"))?;
-   ensure!(db.is_empty(&txn)?,"unsupported existing store");let mut id=[0;16];File::open("/dev/urandom")?.read_exact(&mut id)?;db.put(&mut txn,b"identity-v1",&id)?;txn.commit()?;(db,id)
+   ensure!(db.is_empty(&txn)?,"unsupported existing store");let mut id=[0;16];File::open("/dev/urandom")?.read_exact(&mut id)?;db.put(&mut txn,b"identity-v1",&id)?;let churn_db=env.create_database(&mut txn,Some("diagnostic-unrelated"))?;txn.commit()?;(db,churn_db,id)
  };
- Ok(Self{owner:Arc::new(Owner{env,db,_lock:lock,identity,counts:Counts::default()}),cache:Mutex::new(HashMap::new())})
+ Ok(Self{owner:Arc::new(Owner{env,db,churn_db,_lock:lock,identity,counts:Counts::default()}),cache:Mutex::new(HashMap::new())})
 }
 pub fn store_id(&self)->[u8;16]{self.owner.identity}
 pub fn metrics(&self)->Metrics {let c=&self.owner.counts;let get=|a:&AtomicU64|a.load(Ordering::Relaxed);Metrics{resolutions:get(&c.resolutions),read_transactions:get(&c.reads),private_commits:get(&c.private),public_commits:get(&c.public),initialized_page_bytes:get(&c.initialized),producer_rebindings:get(&c.rebindings)}}
@@ -77,7 +80,7 @@ pub fn publish(&mut self,id:u64,metadata:&[u8],extents:&[Descriptor])->Result<()
 }
 pub fn published(&self,id:u64)->Result<Option<Vec<u8>>>{self.read_record(b'p',id)}
 fn read_record(&self,kind:u8,id:u64)->Result<Option<Vec<u8>>>{let txn=self.read()?;Ok(self.owner.db.get(&txn,&key(kind,id))?.map(<[u8]>::to_vec))}
-fn ids(&self,kind:u8)->Result<Vec<u64>>{let txn=self.read()?;self.owner.db.prefix_iter(&txn,&[kind])?.map(|entry|{let(k,_)=entry?;ensure!(k.len()==9,"malformed object key");Ok(u64::from_be_bytes(k[1..].try_into()?))}).collect()}
+fn ids(&self,kind:u8)->Result<Vec<u64>>{let txn=self.read()?;let result=self.owner.db.prefix_iter(&txn,&[kind])?.map(|entry|{let(k,_)=entry?;ensure!(k.len()==9,"malformed object key");Ok(u64::from_be_bytes(k[1..].try_into()?))}).collect();result}
 pub fn published_ids(&self)->Result<Vec<u64>>{self.ids(b'p')}
 pub fn init_derived_v1(&mut self)->Result<()> {
  let mut txn=self.owner.env.write_txn()?;ensure!(self.owner.db.get(&txn,b"derived-schema")?.is_none(),"derived schema already initialized");
@@ -86,19 +89,19 @@ pub fn init_derived_v1(&mut self)->Result<()> {
 }
 pub fn derived_schema_version(&self)->Result<Option<u64>>{let txn=self.read()?;match self.owner.db.get(&txn,b"derived-schema")? {None=>Ok(None),Some(b"derived-v1")=>Ok(Some(1)),_=>anyhow::bail!("malformed or unsupported derived schema")}}
 pub fn require_derived_v1(&self)->Result<()>{ensure!(self.derived_schema_version()?==Some(1),"missing derived schema v1");Ok(())}
-pub fn derived_put(&mut self,id:u64,bytes:&[u8])->Result<()>{self.require_derived_v1()?;let mut txn=self.owner.env.write_txn()?;let k=key(b'o',id);ensure!(self.owner.db.get(&txn,&k)?.is_none(),"duplicate derived object");self.owner.db.put(&mut txn,&k,bytes)?;txn.commit()?;Ok(())}
+pub fn derived_put(&mut self,id:u64,bytes:&[u8])->Result<()>{ensure!(bytes.len()<=1<<30,"metadata too large");self.require_derived_v1()?;let mut txn=self.owner.env.write_txn()?;let k=key(b'o',id);ensure!(self.owner.db.get(&txn,&k)?.is_none(),"duplicate derived object");self.owner.db.put(&mut txn,&k,bytes)?;txn.commit()?;self.owner.counts.public.fetch_add(1,Ordering::Relaxed);Ok(())}
 pub fn derived_get(&self,id:u64)->Result<Option<Vec<u8>>>{self.require_derived_v1()?;self.read_record(b'o',id)}
 pub fn derived_next_object_id(&self)->Result<u64>{self.require_derived_v1()?;match self.ids(b'o')?.last(){Some(id)=>id.checked_add(1).ok_or_else(||anyhow::anyhow!("object ID exhausted")),None=>Ok(0)}}
 pub fn derived_head(&self)->Result<Option<(u64,Vec<u8>)>>{self.require_derived_v1()?;let txn=self.read()?;let mut last=None;for entry in self.owner.db.prefix_iter(&txn,b"h")?{let(k,v)=entry?;ensure!(k.len()==9,"malformed head key");last=Some((u64::from_be_bytes(k[1..].try_into()?),v.to_vec()));}Ok(last)}
 pub fn derived_publish_head(&mut self,sequence:u64,bytes:&[u8],required:&[u64])->Result<()>{
- self.require_derived_v1()?;let mut txn=self.owner.env.write_txn()?;
+ ensure!(bytes.len()<=1<<30,"metadata too large");self.require_derived_v1()?;let mut txn=self.owner.env.write_txn()?;
  for entry in self.owner.db.prefix_iter(&txn,b"h")? {let(k,_)=entry?;ensure!(k.len()==9 && sequence>u64::from_be_bytes(k[1..].try_into()?),"stale derived head");}
  for id in required {ensure!(self.owner.db.get(&txn,&key(b'o',*id))?.is_some(),"missing derived object");}
- self.owner.db.put(&mut txn,&key(b'h',sequence),bytes)?;txn.commit()?;Ok(())
+ self.owner.db.put(&mut txn,&key(b'h',sequence),bytes)?;txn.commit()?;self.owner.counts.public.fetch_add(1,Ordering::Relaxed);Ok(())
 }
 /// Diagnostic mutable namespace, unrelated to immutable text/derived objects.
 /// Holding any lease can delay recycling pages from these overwrites too.
-pub fn diagnostic_churn(&mut self,bytes:&[u8])->Result<()> {let mut txn=self.owner.env.write_txn()?;self.owner.db.put(&mut txn,b"churn",bytes)?;txn.commit()?;Ok(())}
+pub fn diagnostic_churn(&mut self,bytes:&[u8])->Result<()> {let mut txn=self.owner.env.write_txn()?;self.owner.churn_db.put(&mut txn,b"churn",bytes)?;txn.commit()?;Ok(())}
 pub fn diagnostic_last_page_number(&self)->usize{self.owner.env.info().last_page_number}
 }
 
