@@ -4,13 +4,14 @@ use anyhow::{ensure, Result};
 use append_only_bytes::{BytesSlice, ImmutableBytes};
 use sanakirja::{AllocPage, Commit, LoadPage, RootDb};
 use std::{
+    collections::BTreeMap,
     fs::{File, OpenOptions},
     io::Read,
     path::Path,
     ptr::NonNull,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc,
+        Arc, Mutex, Weak,
     },
 };
 const PAGE: usize = 4096;
@@ -51,11 +52,29 @@ struct Owner {
 pub struct Store {
     owner: Arc<Owner>,
     store_id: [u8; 16],
+    live_segments: Arc<Mutex<BTreeMap<u64, Weak<SealedSegment>>>>,
 }
 struct SealedSegment {
+    descriptor: Descriptor,
+    cache: Weak<Mutex<BTreeMap<u64, Weak<SealedSegment>>>>,
     _owner: Arc<Owner>,
     ptr: NonNull<u8>,
     len: usize,
+}
+// Cache membership is only a shortcut to an already authenticated, still-live
+// lease, never authority derived from an incoming descriptor. Weak entries must
+// neither retain mapping/locks nor accumulate after the last consumer dies.
+impl Drop for SealedSegment {
+    fn drop(&mut self) {
+        if let Some(cache) = self.cache.upgrade() {
+            let mut cache = cache.lock().unwrap();
+            if cache.get(&self.descriptor.id).is_some_and(|entry| {
+                std::ptr::eq(entry.as_ptr(), self)
+            }) {
+                cache.remove(&self.descriptor.id);
+            }
+        }
+    }
 }
 // SAFETY: Only newly allocated private pages are mutated; no public API exposes
 // transactions or frees pages. Committed payload pages are never reused. Owner
@@ -167,7 +186,7 @@ impl Store {
             txn.commit()?;
             id
         };
-        Ok(Self { owner, store_id })
+        Ok(Self { owner, store_id, live_segments: Arc::new(Mutex::new(BTreeMap::new())) })
     }
     pub fn store_id(&self) -> [u8; 16] {
         self.store_id
@@ -224,14 +243,15 @@ impl Store {
         txn.set_root(0, db.db.into());
         txn.commit()?;
         self.owner.counts.private.fetch_add(1, Ordering::SeqCst);
-        Ok((
-            descriptor,
-            BytesSlice::from_immutable(Arc::new(SealedSegment {
-                _owner: self.owner.clone(),
-                ptr,
-                len,
-            })),
-        ))
+        let segment = Arc::new(SealedSegment {
+            descriptor: descriptor.clone(),
+            cache: Arc::downgrade(&self.live_segments),
+            _owner: self.owner.clone(),
+            ptr,
+            len,
+        });
+        self.live_segments.lock().unwrap().insert(descriptor.id, Arc::downgrade(&segment));
+        Ok((descriptor, BytesSlice::from_immutable(segment)))
     }
     pub fn insert(
         &mut self,
@@ -242,6 +262,12 @@ impl Store {
         Ok(self.insert_bound(id, len, generate)?.1)
     }
     fn resolve(&self, id: u64) -> Result<(Descriptor, BytesSlice)> {
+        // Drop the cache lock before any strong lease can be dropped: its Drop
+        // removes the weak entry. Disk resolution remains mandatory on a miss.
+        let cached = self.live_segments.lock().unwrap().get(&id).and_then(Weak::upgrade);
+        if let Some(segment) = cached {
+            return Ok((segment.descriptor.clone(), BytesSlice::from_immutable(segment)));
+        }
         self.owner.counts.resolutions.fetch_add(1, Ordering::SeqCst);
         self.owner.counts.reads.fetch_add(1, Ordering::SeqCst);
         let txn = sanakirja::Env::txn_begin(&self.owner.env)?;
@@ -272,14 +298,15 @@ impl Store {
         };
         let ptr = NonNull::new(raw[HEADER..].as_ptr().cast_mut()).unwrap();
         drop(txn);
-        Ok((
-            descriptor,
-            BytesSlice::from_immutable(Arc::new(SealedSegment {
-                _owner: self.owner.clone(),
-                ptr,
-                len,
-            })),
-        ))
+        let segment = Arc::new(SealedSegment {
+            descriptor: descriptor.clone(),
+            cache: Arc::downgrade(&self.live_segments),
+            _owner: self.owner.clone(),
+            ptr,
+            len,
+        });
+        self.live_segments.lock().unwrap().insert(descriptor.id, Arc::downgrade(&segment));
+        Ok((descriptor, BytesSlice::from_immutable(segment)))
     }
     pub fn get(&self, id: u64) -> Result<BytesSlice> {
         Ok(self.resolve(id)?.1)
@@ -414,6 +441,53 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn live_binding_reuses_validation_without_retaining_consumers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data");
+        let mut store = unsafe { Store::open(&path).unwrap() };
+        let (descriptor, first) = store.insert_bound(7, 3, &mut |out| out.copy_from_slice(b"abc")).unwrap();
+        let before = store.metrics();
+        let second = store.bind(&descriptor).unwrap();
+        assert_eq!(first.as_ptr(), second.as_ptr());
+        store.publish(1, b"metadata", &[descriptor.clone()]).unwrap();
+        assert_eq!(store.metrics().resolutions, before.resolutions);
+        assert_eq!(store.metrics().read_transactions, before.read_transactions);
+        for field in 0..4 {
+            let mut wrong = descriptor.clone();
+            match field {
+                0 => wrong.store_id[0] ^= 1,
+                1 => wrong.id += 1,
+                2 => wrong.page += 4096,
+                _ => wrong.len += 1,
+            }
+            assert!(store.bind(&wrong).is_err());
+            assert!(store.publish(2, b"invalid", &[wrong]).is_err());
+        }
+        assert!(store.published(2).unwrap().is_none());
+        // A second environment cannot authenticate this lease by coincidental id.
+        let mut other = unsafe { Store::open(&dir.path().join("other")).unwrap() };
+        let (_, other_bytes) = other.insert_bound(7, 3, &mut |out| out.copy_from_slice(b"xyz")).unwrap();
+        assert!(other.bind(&descriptor).is_err());
+        assert_eq!(&*other_bytes, b"xyz");
+        drop(first);
+        assert_eq!(store.live_segments.lock().unwrap().len(), 1);
+        drop(second);
+        assert!(store.live_segments.lock().unwrap().is_empty());
+        // No strong cache: next bind must authenticate the disk descriptor again.
+        let before = store.metrics();
+        let rebound = store.bind(&descriptor).unwrap();
+        assert_eq!(store.metrics().resolutions, before.resolutions + 1);
+        drop(store);
+        assert!(unsafe { Store::open(&path) }.is_err());
+        assert_eq!(&*rebound, b"abc");
+        drop(rebound);
+        let reopened = unsafe { Store::open(&path).unwrap() };
+        let before = reopened.metrics();
+        assert_eq!(&*reopened.bind(&descriptor).unwrap(), b"abc");
+        assert_eq!(reopened.metrics().resolutions, before.resolutions + 1);
+    }
+
     #[test]
     fn direct_owner_and_atomic_public_metadata() {
         let dir = tempfile::tempdir().unwrap();
