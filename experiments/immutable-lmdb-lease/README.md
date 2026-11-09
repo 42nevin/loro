@@ -50,3 +50,48 @@ The API exposes no page allocator, page refcount, or physical lifecycle controls
 Derived head publication validates dependencies and monotonic sequence in its
 write transaction. Failed generation aborts via transaction Drop; private
 commits are not public until the separate publication transaction succeeds.
+
+## Second arm: `--features detached-objects`
+
+This opt-in format stores only object identities/index/public records in LMDB.
+Text is held in one immutable file per extent, mapped by an Arc-owned read-only
+mapping. It does **not** retain an LMDB read transaction. The default pinned-LMDB
+arm remains separately selectable; a persistent storage-mode marker rejects
+opening one format with the other feature.
+
+Generation writes directly into a fresh create_new file's writable mapping.
+The file mapping is flushed, file data/length are synced, and the objects
+directory is synced **before** the LMDB index commit. The writable mapping is
+made read-only without copying; the initial producer and committed owner can
+therefore share the same address. No writable handle is retained. Public record
+publication checks the index and the referenced file's existence/length before
+commit. Cold bind checks length, UTF-8 and checksum and drops its LMDB read
+transaction before returning an owner. The checksum detects accidental damage;
+it is not a cryptographic authenticity guarantee.
+
+A crash or failed generation before index commit can leave an unreachable file.
+It cannot create a reference to a file that has not first passed the durability
+steps. This is an ordering design, not proof of power-loss behavior on every
+filesystem. Recovery/GC of orphan files, packing many objects into segments,
+compaction, and independent reclamation of deleted live objects are **not
+implemented**. One file and mapping per small extent can have substantial
+filesystem/VMA overhead. No conclusion about total production cost follows from
+text-pointer sharing alone.
+
+The sidecar lock remains alive through the mapping owner. The unsafe-open
+contract now covers the object directory/files too: uncoordinated external
+mutation/truncation is forbidden for the entire owner lifetime. A read-only mmap
+is not an OS-enforced seal against other writable opens. There is no claim of
+safe mutable-file sharing with arbitrary writers.
+
+The detached arm avoids pinning unrelated LMDB pages, but this does not amount
+to having solved object garbage collection. It separates text-object lifetime
+from database-page lifetime using ordinary immutable files, not custom database
+nodes, page references, or a database allocator.
+
+Cold publication also validates the file checksum/UTF-8 when no live validated
+owner exists; a live owner is reused as the validation witness. This can incur
+a body scan but not a heap-owned body copy. Path handling is absolute after
+opening. The environment's immediate parent directory is synced during open;
+callers creating a previously nonexistent chain of parent directories must
+establish durability of that chain themselves (tests use an existing temp root).

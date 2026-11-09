@@ -17,7 +17,18 @@ fn inline_and_overflow_consumers_share_binding_and_outlive_facade() -> Result<()
         let temp = tempfile::tempdir()?;
         let path = temp.path().join("env");
         let mut store = unsafe { Store::open(&path)? };
-        let (descriptor, owner) = insert(&mut store, 41, &text)?;
+        let mut generated_address = 0usize;
+        let (descriptor, owner) = store.insert_bound(41, text.len(), &mut |out| {
+            generated_address = out.as_ptr() as usize;
+            out.copy_from_slice(&text);
+        })?;
+        #[cfg(feature = "detached-objects")]
+        {
+            assert_eq!(generated_address, owner.as_ptr() as usize, "sealing detached mapping changed address");
+            assert_eq!(store.metrics().producer_rebindings, 0);
+        }
+        #[cfg(not(feature = "detached-objects"))]
+        { let _ = generated_address; } // no cross-commit address guarantee
         let consumer = store.bind(&descriptor)?;
         assert_eq!(owner.as_ptr(), consumer.as_ptr());
         assert_eq!(owner.as_ref(), text.as_slice());
@@ -116,9 +127,20 @@ fn tiny_body_lease_pins_unrelated_metadata_then_last_drop_restores_reuse() -> Re
     let released = churn(&mut store, 256)?;
     eprintln!("LMDB_LIFETIME_SAMPLES baseline={baseline:?} held={held:?} one_held={one_held:?} settling={settling:?} released={released:?}");
     // Compare growth, NOT absolute file length: freeing pages is not truncation.
-    assert!(growth(&held) > growth(&baseline) + 128, "held lease must expose epoch retention; inspect samples");
-    assert!(growth(&one_held) > 128, "dropping one clone must not release last consumer's epoch");
-    assert!(growth(&released) * 4 < growth(&one_held), "final drop must restore substantially lower allocation growth");
+    #[cfg(not(feature = "detached-objects"))]
+    {
+        assert!(growth(&held) > growth(&baseline) + 128, "held lease must expose epoch retention; inspect samples");
+        assert!(growth(&one_held) > 128, "dropping one clone must not release last consumer's epoch");
+        assert!(growth(&released) * 4 < growth(&one_held), "final drop must restore substantially lower allocation growth");
+    }
+    #[cfg(feature = "detached-objects")]
+    {
+        // Detached bytes retain no LMDB read epoch. The object insertion can
+        // slightly perturb free pages; bounded overhead is not sustained growth.
+        assert!(growth(&held) <= growth(&baseline) + 32, "detached owner unexpectedly pins metadata pages");
+        assert!(growth(&one_held) <= growth(&baseline) + 32, "detached clone unexpectedly pins metadata pages");
+        assert!(growth(&released) <= growth(&baseline) + 32, "unheld metadata churn unexpectedly keeps growing");
+    }
     Ok(())
 }
 
@@ -191,5 +213,25 @@ fn process_crash_distinguishes_private_orphan_from_published_state() -> Result<(
         let checked = child_command(&path, &format!("verify-{phase}"))?.output()?;
         assert!(checked.status.success(), "fresh-process verifier failed: {}", String::from_utf8_lossy(&checked.stderr));
     }
+    Ok(())
+}
+
+#[cfg(feature = "detached-objects")]
+#[test]
+fn detached_same_length_corruption_is_rejected_before_publication() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let path = temp.path().join("env");
+    let mut store = unsafe { Store::open(&path)? };
+    let (descriptor, owner) = insert(&mut store, 73, b"valid")?;
+    drop(owner);
+    drop(store);
+    // No store or live mmap exists. Inject persisted damage before a new open,
+    // never mutate storage underlying a live immutable owner.
+    let file = std::fs::read_dir(path.join("objects"))?.next().unwrap()?.path();
+    std::fs::write(file, b"wrong")?;
+    let mut reopened = unsafe { Store::open(&path)? };
+    assert!(reopened.bind(&descriptor).is_err(), "fresh bind accepted corrupted content");
+    assert!(reopened.publish(1, b"must-not-accept", &[descriptor]).is_err(), "publish accepted content that fresh bind rejects");
+    assert!(reopened.published(1)?.is_none());
     Ok(())
 }

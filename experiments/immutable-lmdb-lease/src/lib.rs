@@ -5,6 +5,8 @@ use anyhow::{ensure, Result};
 use append_only_bytes::{BytesSlice, ImmutableBytes};
 use heed::{types::Bytes, Database, Env, EnvOpenOptions, RoTxn, WithoutTls};
 use std::{collections::HashMap, fs::File, io::Read, path::Path, ptr::NonNull, sync::{Arc,Mutex,Weak,atomic::{AtomicU64,Ordering}}};
+#[cfg(feature="detached-objects")]
+mod detached;
 const MAP_SIZE:usize=512*1024*1024;
 #[derive(Clone,Debug,PartialEq,Eq,serde::Serialize,serde::Deserialize)]
 pub struct Descriptor {pub store_id:[u8;16],pub id:u64,/// Compatibility field: logical object ID, NEVER a physical page.
@@ -13,13 +15,15 @@ pub page:u64,pub len:usize}
 pub struct Metrics {pub resolutions:u64,pub read_transactions:u64,pub private_commits:u64,pub public_commits:u64,pub initialized_page_bytes:u64,pub producer_rebindings:u64}
 #[derive(Default)]
 struct Counts {resolutions:AtomicU64,reads:AtomicU64,private:AtomicU64,public:AtomicU64,initialized:AtomicU64,rebindings:AtomicU64}
-struct Owner {env:Env<WithoutTls>,db:Database<Bytes,Bytes>,churn_db:Database<Bytes,Bytes>,_lock:File,identity:[u8;16],counts:Counts}
-struct Lease { _txn:Mutex<RoTxn<'static,WithoutTls>>, _owner:Arc<Owner>, ptr:NonNull<u8>,len:usize }
+struct Owner {#[cfg(feature="detached-objects")] path:std::path::PathBuf,env:Env<WithoutTls>,db:Database<Bytes,Bytes>,churn_db:Database<Bytes,Bytes>,_lock:File,identity:[u8;16],counts:Counts}
+struct Lease { #[cfg(not(feature="detached-objects"))] _txn:Mutex<RoTxn<'static,WithoutTls>>, #[cfg(feature="detached-objects")] _map:memmap2::Mmap, _owner:Arc<Owner>, ptr:NonNull<u8>,len:usize }
 // NOTLS permits moving the owned transaction. No operation is performed on it
 // after construction; Mutex provides Sync without claiming RoTxn itself is Sync.
 // The txn/environment are dropped only with the last Arc, after all byte borrows.
 // Concurrent byte reads do not invoke LMDB transaction APIs. LMDB MVCC prevents
 // reuse of these pages while the read epoch is alive. Map resizing is forbidden.
+// In detached mode the Mmap instead owns an immutable sealed object file view;
+// no LMDB txn is retained, and external file mutation is excluded by open contract.
 unsafe impl Send for Lease {}
 unsafe impl Sync for Lease {}
 unsafe impl ImmutableBytes for Lease {fn as_bytes(&self)->&[u8] {unsafe {std::slice::from_raw_parts(self.ptr.as_ptr(),self.len)}}}
@@ -35,6 +39,8 @@ pub unsafe fn open(path:&Path)->Result<Self> {
  let lock=std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path.with_extension("lease-lock"))?;
  fs2::FileExt::try_lock_exclusive(&lock)?;
  std::fs::create_dir_all(path)?;
+ let absolute=std::fs::canonicalize(path)?;let path=absolute.as_path();
+ if let Some(parent)=path.parent(){File::open(parent)?.sync_all()?;}
  let mut opts=EnvOpenOptions::new().read_txn_without_tls();opts.map_size(MAP_SIZE).max_dbs(2).max_readers(32768);
  let existed=path.join("data.mdb").exists();
  let env=unsafe {opts.open(path)?};
@@ -43,18 +49,22 @@ pub unsafe fn open(path:&Path)->Result<Self> {
    let db:Database<Bytes,Bytes>=env.open_database(&txn,Some("immutable-objects-v1"))?.ok_or_else(||anyhow::anyhow!("unsupported existing store"))?;
    let bytes=db.get(&txn,b"identity-v1")?.ok_or_else(||anyhow::anyhow!("missing store identity"))?;
    ensure!(bytes.len()==16,"malformed identity");
+   ensure!(db.get(&txn,b"storage-mode")?==Some(storage_mode()),"storage mode mismatch");
    let churn_db=env.open_database(&txn,Some("diagnostic-unrelated"))?.ok_or_else(||anyhow::anyhow!("missing diagnostic database"))?;
    let identity=bytes.try_into().unwrap();txn.commit()?;
    (db,churn_db,identity)
  } else {
    let mut txn=env.write_txn()?;let db:Database<Bytes,Bytes>=env.create_database(&mut txn,Some("immutable-objects-v1"))?;
-   ensure!(db.is_empty(&txn)?,"unsupported existing store");let mut id=[0;16];File::open("/dev/urandom")?.read_exact(&mut id)?;db.put(&mut txn,b"identity-v1",&id)?;let churn_db=env.create_database(&mut txn,Some("diagnostic-unrelated"))?;txn.commit()?;(db,churn_db,id)
+   ensure!(db.is_empty(&txn)?,"unsupported existing store");let mut id=[0;16];File::open("/dev/urandom")?.read_exact(&mut id)?;db.put(&mut txn,b"identity-v1",&id)?;db.put(&mut txn,b"storage-mode",storage_mode())?;let churn_db=env.create_database(&mut txn,Some("diagnostic-unrelated"))?;txn.commit()?;(db,churn_db,id)
  };
- Ok(Self{owner:Arc::new(Owner{env,db,churn_db,_lock:lock,identity,counts:Counts::default()}),cache:Mutex::new(HashMap::new())})
+ #[cfg(feature="detached-objects")]
+ {std::fs::create_dir_all(path.join("objects"))?;File::open(path)?.sync_all()?;}
+ Ok(Self{owner:Arc::new(Owner{#[cfg(feature="detached-objects")] path:path.to_path_buf(),env,db,churn_db,_lock:lock,identity,counts:Counts::default()}),cache:Mutex::new(HashMap::new())})
 }
 pub fn store_id(&self)->[u8;16]{self.owner.identity}
 pub fn metrics(&self)->Metrics {let c=&self.owner.counts;let get=|a:&AtomicU64|a.load(Ordering::Relaxed);Metrics{resolutions:get(&c.resolutions),read_transactions:get(&c.reads),private_commits:get(&c.private),public_commits:get(&c.public),initialized_page_bytes:get(&c.initialized),producer_rebindings:get(&c.rebindings)}}
 fn read(&self)->Result<RoTxn<'static,WithoutTls>> {self.owner.counts.reads.fetch_add(1,Ordering::Relaxed);Ok(self.owner.env.clone().static_read_txn()?)}
+#[cfg(not(feature="detached-objects"))]
 pub fn insert_bound(&mut self,id:u64,len:usize,generate:&mut dyn FnMut(&mut[u8]))->Result<(Descriptor,BytesSlice)> {
  ensure!(len>0 && len<=4064,"extent size outside matched control range");
  let mut txn=self.owner.env.write_txn()?;let k=key(b't',id);ensure!(self.owner.db.get(&txn,&k)?.is_none(),"duplicate extent ID");
@@ -63,8 +73,9 @@ pub fn insert_bound(&mut self,id:u64,len:usize,generate:&mut dyn FnMut(&mut[u8])
  let d=Descriptor{store_id:self.store_id(),id,page:id,len};let slice=self.bind(&d)?;Ok((d,slice))
 }
 pub fn insert(&mut self,id:u64,len:usize,generate:&mut dyn FnMut(&mut[u8]))->Result<BytesSlice>{Ok(self.insert_bound(id,len,generate)?.1)}
-pub fn descriptor(&self,id:u64)->Result<Descriptor>{let txn=self.read()?;let value=self.owner.db.get(&txn,&key(b't',id))?.ok_or_else(||anyhow::anyhow!("missing extent"))?;Ok(Descriptor{store_id:self.store_id(),id,page:id,len:value.len()})}
+pub fn descriptor(&self,id:u64)->Result<Descriptor>{let txn=self.read()?;let value=self.owner.db.get(&txn,&key(b't',id))?.ok_or_else(||anyhow::anyhow!("missing extent"))?;Ok(Descriptor{store_id:self.store_id(),id,page:id,len:record_len(value)?})}
 pub fn get(&self,id:u64)->Result<BytesSlice>{self.bind(&self.descriptor(id)?)}
+#[cfg(not(feature="detached-objects"))]
 pub fn bind(&self,d:&Descriptor)->Result<BytesSlice>{
  ensure!(d.store_id==self.store_id() && d.page==d.id,"foreign or forged descriptor");
  let mut cache=self.cache.lock().unwrap();
@@ -75,7 +86,9 @@ pub fn bind(&self,d:&Descriptor)->Result<BytesSlice>{
 }
 pub fn publish(&mut self,id:u64,metadata:&[u8],extents:&[Descriptor])->Result<()> {
  ensure!(metadata.len()<=1<<30,"metadata too large");let mut txn=self.owner.env.write_txn()?;let k=key(b'p',id);ensure!(self.owner.db.get(&txn,&k)?.is_none(),"duplicate publication");
- for d in extents {ensure!(d.store_id==self.store_id() && d.page==d.id,"foreign descriptor");let v=self.owner.db.get(&txn,&key(b't',d.id))?.ok_or_else(||anyhow::anyhow!("missing extent"))?;ensure!(v.len()==d.len,"extent length mismatch");}
+ for d in extents {ensure!(d.store_id==self.store_id() && d.page==d.id,"foreign descriptor");let v=self.owner.db.get(&txn,&key(b't',d.id))?.ok_or_else(||anyhow::anyhow!("missing extent"))?;ensure!(record_len(v)?==d.len,"extent length mismatch");
+ #[cfg(feature="detached-objects")] self.validate_public_object(d.id,v)?;
+ }
  self.owner.db.put(&mut txn,&k,metadata)?;txn.commit()?;self.owner.counts.public.fetch_add(1,Ordering::Relaxed);Ok(())
 }
 pub fn published(&self,id:u64)->Result<Option<Vec<u8>>>{self.read_record(b'p',id)}
@@ -110,3 +123,12 @@ impl loro::TextExtentAllocator for Allocator<'_>{
  fn allocate_text(&mut self,len:usize,generate:&mut dyn FnMut(&mut[u8]))->std::io::Result<loro::TextSlice>{let bytes=self.allocate(len,generate)?;loro::TextSlice::direct_extent(self.id,bytes)}
  fn allocate(&mut self,len:usize,generate:&mut dyn FnMut(&mut[u8]))->std::io::Result<BytesSlice>{let result=self.store.insert(self.id,len,generate).map_err(std::io::Error::other)?;self.generated_bytes+=len;self.initialized_page_bytes+=len;Ok(result)}
 }
+
+#[cfg(not(feature="detached-objects"))]
+fn storage_mode()->&'static [u8]{b"pinned-lmdb-v1"}
+#[cfg(feature="detached-objects")]
+fn storage_mode()->&'static [u8]{b"detached-files-v1"}
+#[cfg(not(feature="detached-objects"))]
+fn record_len(value:&[u8])->Result<usize>{Ok(value.len())}
+#[cfg(feature="detached-objects")]
+fn record_len(value:&[u8])->Result<usize>{ensure!(value.len()==32,"invalid detached descriptor");Ok(usize::try_from(u64::from_be_bytes(value[16..24].try_into()?))?)}

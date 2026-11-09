@@ -4,7 +4,12 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 [workspace]
+[features]
+default = []
+detached-objects = ["dep:memmap2"]
+
 [dependencies]
+memmap2 = { version = "=0.9.9", optional = true }
 append-only-bytes = "=0.1.12"
 loro = { path = "../../crates/loro", features = ["shared_arena_experiment"] }
 heed = "=0.22.1"
