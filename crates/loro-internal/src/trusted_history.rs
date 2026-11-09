@@ -12,7 +12,7 @@ use bytes::Bytes;
 use loro_kv_store::mem_store::MemKvConfig;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{btree_map, BTreeMap, BTreeSet},
     ops::Bound,
     panic::{catch_unwind, AssertUnwindSafe},
     sync::Arc,
@@ -73,6 +73,89 @@ struct Backing {
     overlay: BTreeMap<Vec<u8>, Option<Bytes>>,
     failure: Mutex<Option<String>>,
     failed: Arc<crate::sync::AtomicBool>,
+}
+// Borrowed range cursors share one unconsumed interval in each map. Looking at
+// either end via a cloned cursor does not consume it or clone any keys. Equal
+// keys are consumed from both maps together, with the overlay winning, so
+// arbitrary interleaving of next/next_back cannot return a key twice.
+struct VisibleRange<'a> {
+    entries: btree_map::Range<'a, Vec<u8>, usize>,
+    overlay: btree_map::Range<'a, Vec<u8>, Option<Bytes>>,
+}
+impl<'a> VisibleRange<'a> {
+    fn advance(&mut self, back: bool) -> Option<&'a Vec<u8>> {
+        loop {
+            let base = if back {
+                self.entries.clone().next_back()
+            } else {
+                self.entries.clone().next()
+            };
+            let changed = if back {
+                self.overlay.clone().next_back()
+            } else {
+                self.overlay.clone().next()
+            };
+            let (take_base, take_overlay) = match (base, changed) {
+                (None, None) => return None,
+                (Some(_), None) => (true, false),
+                (None, Some(_)) => (false, true),
+                (Some((a, _)), Some((b, _))) => match a.cmp(b) {
+                    std::cmp::Ordering::Equal => (true, true),
+                    std::cmp::Ordering::Less => (!back, back),
+                    std::cmp::Ordering::Greater => (back, !back),
+                },
+            };
+            let base = if take_base {
+                if back {
+                    self.entries.next_back()
+                } else {
+                    self.entries.next()
+                }
+            } else {
+                None
+            };
+            if take_overlay {
+                let (key, value) = if back {
+                    self.overlay.next_back()
+                } else {
+                    self.overlay.next()
+                }
+                .unwrap();
+                if value.is_some() {
+                    return Some(key);
+                }
+                // A tombstone hides the old value, including when both streams
+                // have this key. Continue without reading either payload.
+            } else {
+                return Some(base.unwrap().0);
+            }
+        }
+    }
+}
+impl<'a> Iterator for VisibleRange<'a> {
+    type Item = &'a Vec<u8>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.advance(false)
+    }
+}
+impl DoubleEndedIterator for VisibleRange<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.advance(true)
+    }
+}
+impl std::iter::FusedIterator for VisibleRange<'_> {}
+
+// The previous filter-based scan returned an empty iterator for all reversed
+// or excluded-equal bounds. BTreeMap::range would panic for some of those, so
+// preserve the existing KvStore behavior before constructing range cursors.
+fn empty_range(start: Bound<&[u8]>, end: Bound<&[u8]>) -> bool {
+    match (start, end) {
+        (Bound::Unbounded, _) | (_, Bound::Unbounded) => false,
+        (Bound::Included(a), Bound::Included(b)) => a > b,
+        (Bound::Included(a) | Bound::Excluded(a), Bound::Included(b) | Bound::Excluded(b)) => {
+            a >= b
+        }
+    }
 }
 impl Backing {
     fn fail(&self, error: String) -> ! {
@@ -143,25 +226,19 @@ impl KvStore for Backing {
         end: Bound<&[u8]>,
     ) -> Box<dyn DoubleEndedIterator<Item = (Bytes, Bytes)> + '_> {
         self.check();
-        let keys = self
-            .keys()
-            .into_iter()
-            .filter(|k| match start {
-                Bound::Included(s) => k.as_slice() >= s,
-                Bound::Excluded(s) => k.as_slice() > s,
-                Bound::Unbounded => true,
-            })
-            .filter(|k| match end {
-                Bound::Included(e) => k.as_slice() <= e,
-                Bound::Excluded(e) => k.as_slice() < e,
-                Bound::Unbounded => true,
-            })
-            .collect::<Vec<_>>();
-        Box::new(keys.into_iter().map(move |key| {
-            let value = self.get(&key).expect("trusted indexed key");
-            (key.into(), value)
+        if empty_range(start, end) {
+            return Box::new(std::iter::empty());
+        }
+        let keys = VisibleRange {
+            entries: self.entries.range::<[u8], _>((start, end)),
+            overlay: self.overlay.range::<[u8], _>((start, end)),
+        };
+        Box::new(keys.map(move |key| {
+            let value = self.get(key).expect("trusted indexed key");
+            (Bytes::copy_from_slice(key), value)
         }))
     }
+
     fn len(&self) -> usize {
         self.keys().len()
     }
@@ -320,5 +397,156 @@ impl LoroDoc {
                 })
             })
         })?
+    }
+}
+
+#[cfg(all(test, not(loom)))]
+mod range_tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Debug)]
+    struct Source {
+        values: BTreeMap<Vec<u8>, Vec<u8>>,
+        reads: AtomicUsize,
+    }
+    impl TrustedHistorySource for Source {
+        fn read(&self, key: &[u8]) -> Result<Vec<u8>, String> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            self.values.get(key).cloned().ok_or("missing key".into())
+        }
+    }
+    fn backing(values: BTreeMap<Vec<u8>, Vec<u8>>) -> (Backing, Arc<Source>) {
+        let entries = values.iter().map(|(k, v)| (k.clone(), v.len())).collect();
+        let source = Arc::new(Source {
+            values,
+            reads: AtomicUsize::new(0),
+        });
+        (
+            Backing {
+                source: source.clone(),
+                entries: Arc::new(entries),
+                overlay: BTreeMap::new(),
+                failure: Mutex::new(None),
+                failed: Arc::new(crate::sync::AtomicBool::new(false)),
+            },
+            source,
+        )
+    }
+    fn admitted(key: &[u8], start: Bound<&[u8]>, end: Bound<&[u8]>) -> bool {
+        (match start {
+            Bound::Included(s) => key >= s,
+            Bound::Excluded(s) => key > s,
+            Bound::Unbounded => true,
+        }) && (match end {
+            Bound::Included(e) => key <= e,
+            Bound::Excluded(e) => key < e,
+            Bound::Unbounded => true,
+        })
+    }
+    #[test]
+    fn scan_matches_materialized_oracle_for_bounds_overlays_and_mixed_ends() {
+        // Every key is absent, retained, overwritten, or deleted, including
+        // tombstones for absent keys. Compare against ordinary map updates,
+        // not a second implementation of the streaming merge.
+        let keys: Vec<Vec<u8>> = (0..4).map(|n| vec![n]).collect();
+        let mut bounds = vec![Bound::Unbounded];
+        for key in &keys {
+            bounds.push(Bound::Included(key.as_slice()));
+            bounds.push(Bound::Excluded(key.as_slice()));
+        }
+        for base_mask in 0..16 {
+            for overlay_states in 0..81 {
+                let original: BTreeMap<_, _> = keys
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| base_mask & (1 << i) != 0)
+                    .map(|(_, k)| (k.clone(), vec![10 + k[0]]))
+                    .collect();
+                let (mut store, _) = backing(original.clone());
+                let mut oracle = original;
+                let mut states = overlay_states;
+                for key in &keys {
+                    match states % 3 {
+                        1 => {
+                            let value = vec![20 + key[0]];
+                            store.set(key, value.clone().into());
+                            oracle.insert(key.clone(), value);
+                        }
+                        2 => {
+                            store.remove(key);
+                            oracle.remove(key);
+                        }
+                        _ => {}
+                    }
+                    states /= 3;
+                }
+                for &start in &bounds {
+                    for &end in &bounds {
+                        let expected: Vec<_> = oracle
+                            .iter()
+                            .filter(|(k, _)| admitted(k, start, end))
+                            .map(|(k, v)| (Bytes::copy_from_slice(k), Bytes::copy_from_slice(v)))
+                            .collect();
+                        // All possible front/back consumption schedules, including
+                        // continued consumption after ranges have crossed/exhausted.
+                        for mask in 0..(1 << expected.len()) {
+                            let mut remaining: VecDeque<_> = expected.clone().into();
+                            let mut actual = store.scan(start, end);
+                            for i in 0..expected.len() {
+                                if mask & (1 << i) == 0 {
+                                    assert_eq!(actual.next(), remaining.pop_front());
+                                } else {
+                                    assert_eq!(actual.next_back(), remaining.pop_back());
+                                }
+                            }
+                            assert_eq!(actual.next(), None);
+                            assert_eq!(actual.next_back(), None);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn scan_loads_only_consumed_values_and_overlay_shadows_source() {
+        let (mut store, source) = backing(
+            [
+                (b"a".to_vec(), vec![1]),
+                (b"c".to_vec(), vec![3]),
+                (b"e".to_vec(), vec![5]),
+            ]
+            .into(),
+        );
+        store.set(b"c", Bytes::from_static(&[9]));
+        store.remove(b"e");
+        store.set(b"b", Bytes::from_static(&[2]));
+        source.reads.store(0, Ordering::Relaxed);
+        let mut iter = store.scan(Bound::Unbounded, Bound::Unbounded);
+        assert_eq!(source.reads.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            iter.next_back(),
+            Some((Bytes::from_static(b"c"), Bytes::from_static(&[9])))
+        );
+        assert_eq!(
+            iter.next_back(),
+            Some((Bytes::from_static(b"b"), Bytes::from_static(&[2])))
+        );
+        assert_eq!(source.reads.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            iter.next(),
+            Some((Bytes::from_static(b"a"), Bytes::from_static(&[1])))
+        );
+        assert_eq!(source.reads.load(Ordering::Relaxed), 1);
+        assert_eq!(iter.next_back(), None);
+        drop(iter);
+        assert_eq!(
+            store
+                .scan(Bound::Excluded(b"z"), Bound::Included(b"a"))
+                .next(),
+            None
+        );
+        assert_eq!(source.reads.load(Ordering::Relaxed), 1);
     }
 }

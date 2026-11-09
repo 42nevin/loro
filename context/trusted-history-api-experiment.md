@@ -75,3 +75,26 @@ trusted_history_experiment --locked`. Also run default `cargo check -p loro
 CoW regressions. Record results separately; this document describes coverage,
 not proof of all CRDT/storage cases. The application integration must still prove
 its own root publication, retry, writer claim and full canonical oracle.
+
+## Range lookup without rebuilding the directory
+
+Verified against code 2026-11-09. `Backing::scan` seeks separately into the
+committed directory and private overlay, then merges borrowed ordered range
+cursors. An overlay replacement wins over the committed key; a tombstone
+suppresses it. Forward and reverse consumption share the same remaining
+intervals, including mixed `next`/`next_back` calls. Only returned keys are
+copied into the KV result, and only consumed values invoke the source reader.
+Reversed and excluded-equal ranges remain empty rather than panicking.
+
+This removes full-directory key cloning from an individual range query. It does
+not make initial directory loading, capture, `len`, `size`, or full export lazy;
+those still have separate whole-directory costs. A query skipping many overlay
+tombstones may still visit those tombstones. The source remains immutable and
+root-qualified, with the same storage-failure containment boundary.
+
+Internal `trusted_history::range_tests` compares against materialized map
+updates across absent/retained/replaced/deleted keys, all range-bound pairs,
+and every forward/reverse consumption order for the bounded fixture; it also
+checks that unconsumed and overlay-shadowed payloads are never read. Allocation
+measurements should use an isolated diagnostic overlay, not a permanent global
+allocator in the library tests.
