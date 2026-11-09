@@ -9,7 +9,7 @@ default = []
 detached-objects = ["dep:memmap2"]
 
 [dependencies]
-memmap2 = { version = "=0.9.9", optional = true }
+memmap2 = { version = "=0.9.11", optional = true }
 append-only-bytes = "=0.1.12"
 loro = { path = "../../crates/loro", features = ["shared_arena_experiment"] }
 heed = "=0.22.1"
