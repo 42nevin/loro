@@ -17,13 +17,20 @@ use std::{
 const PAGE: usize = 4096;
 const HEADER: usize = 32;
 const MAGIC: u64 = 0x494d4d555441424c;
+const PAYLOAD_SCHEMA_KEY: u64 = 4;
+const PAYLOAD_SCHEMA_MAGIC_KEY: u64 = 5;
+const PAYLOAD_SCHEMA_MAGIC: u64 = 0x5041434b45445632;
+const PAYLOAD_SCHEMA_VERSION: u64 = 2;
 const RECORD_MAGIC: u64 = 0x5344495245435431;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Descriptor {
     pub store_id: [u8; 16],
     pub id: u64,
     pub page: u64,
+    /// Payload byte offset within the aligned page; mandatory in format v2.
+    pub offset: usize,
     pub len: usize,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -169,6 +176,11 @@ impl Store {
                     id[(key as usize) * 8..(key as usize + 1) * 8]
                         .copy_from_slice(&v.to_le_bytes());
                 }
+                for (key, expected) in [(PAYLOAD_SCHEMA_KEY, PAYLOAD_SCHEMA_VERSION), (PAYLOAD_SCHEMA_MAGIC_KEY, PAYLOAD_SCHEMA_MAGIC)] {
+                    let actual = sanakirja::btree::get(&txn, &db, &key, None)?;
+                    ensure!(actual.is_some_and(|(found, value)| *found == key && *value == expected),
+                        "unsupported payload schema; requires v2 (no migration)");
+                }
                 Some(id)
             } else { None }
         };
@@ -182,6 +194,8 @@ impl Store {
                 let v = u64::from_le_bytes(id[key as usize * 8..(key as usize + 1) * 8].try_into()?);
                 sanakirja::btree::put(&mut txn, &mut db, &key, &v)?;
             }
+            sanakirja::btree::put(&mut txn, &mut db, &PAYLOAD_SCHEMA_KEY, &PAYLOAD_SCHEMA_VERSION)?;
+            sanakirja::btree::put(&mut txn, &mut db, &PAYLOAD_SCHEMA_MAGIC_KEY, &PAYLOAD_SCHEMA_MAGIC)?;
             txn.set_root(2, db.db.into());
             txn.commit()?;
             id
@@ -207,52 +221,10 @@ impl Store {
         len: usize,
         generate: &mut dyn FnMut(&mut [u8]),
     ) -> Result<(Descriptor, BytesSlice)> {
-        ensure!(
-            len > 0 && len <= PAGE - HEADER,
-            "one nonempty page-bounded extent required"
-        );
-        let mut txn = sanakirja::Env::mut_txn_begin(&self.owner.env)?;
-        let mut db: sanakirja::btree::Db<u64, u64> = match txn.root_db(0) {
-            Some(db) => db,
-            None => unsafe { sanakirja::btree::create_db(&mut txn)? },
-        };
-        ensure!(
-            sanakirja::btree::get(&txn, &db, &id, None)?.is_none_or(|(k, _)| *k != id),
-            "duplicate extent identity"
-        );
-        let page = unsafe { txn.alloc_page()? };
-        let raw = unsafe { std::slice::from_raw_parts_mut(page.0.data, PAGE) };
-        raw.fill(0);
-        self.owner
-            .counts
-            .initialized
-            .fetch_add(PAGE as u64, Ordering::SeqCst);
-        raw[8..16].copy_from_slice(&MAGIC.to_le_bytes());
-        raw[16..24].copy_from_slice(&(len as u64).to_le_bytes());
-        raw[24..32].copy_from_slice(&id.to_le_bytes());
-        generate(&mut raw[HEADER..HEADER + len]);
-        std::str::from_utf8(&raw[HEADER..HEADER + len])?;
-        let ptr = NonNull::new(raw[HEADER..].as_mut_ptr()).unwrap();
-        let descriptor = Descriptor {
-            store_id: self.store_id,
-            id,
-            page: page.0.offset,
-            len,
-        };
-        sanakirja::btree::put(&mut txn, &mut db, &id, &page.0.offset)?;
-        txn.set_root(0, db.db.into());
-        txn.commit()?;
-        self.owner.counts.private.fetch_add(1, Ordering::SeqCst);
-        let segment = Arc::new(SealedSegment {
-            descriptor: descriptor.clone(),
-            cache: Arc::downgrade(&self.live_segments),
-            _owner: self.owner.clone(),
-            ptr,
-            len,
-        });
-        self.live_segments.lock().unwrap().insert(descriptor.id, Arc::downgrade(&segment));
-        Ok((descriptor, BytesSlice::from_immutable(segment)))
+        Ok(self.insert_batch_bound(&[(id, len)], &mut |_, out| generate(out))?
+            .pop().expect("one requested extent"))
     }
+
     pub fn insert(
         &mut self,
         id: u64,
@@ -277,26 +249,19 @@ impl Store {
         let (key, offset) = sanakirja::btree::get(&txn, &db, &id, None)?
             .ok_or_else(|| anyhow::anyhow!("missing extent"))?;
         ensure!(*key == id, "missing extent");
-        let page = unsafe { txn.load_page(*offset)? };
+        let page_offset = *offset & !((PAGE as u64) - 1);
+        let slot = usize::try_from(*offset - page_offset)?;
+        ensure!(page_offset != 0 && slot % 8 == 0 && slot + HEADER <= PAGE, "invalid extent location");
+        let page = unsafe { txn.load_page(page_offset)? };
         let raw = unsafe { std::slice::from_raw_parts(page.data, PAGE) };
-        ensure!(
-            u64::from_le_bytes(raw[8..16].try_into()?) == MAGIC,
-            "invalid payload page"
-        );
-        let len = usize::try_from(u64::from_le_bytes(raw[16..24].try_into()?))?;
-        ensure!(len > 0 && len <= PAGE - HEADER, "invalid payload length");
-        ensure!(
-            u64::from_le_bytes(raw[24..32].try_into()?) == id,
-            "extent identity mismatch"
-        );
-        std::str::from_utf8(&raw[HEADER..HEADER + len])?;
-        let descriptor = Descriptor {
-            store_id: self.store_id,
-            id,
-            page: *offset,
-            len,
-        };
-        let ptr = NonNull::new(raw[HEADER..].as_ptr().cast_mut()).unwrap();
+        ensure!(u64::from_le_bytes(raw[slot+8..slot+16].try_into()?) == MAGIC, "invalid payload slot");
+        let len = usize::try_from(u64::from_le_bytes(raw[slot+16..slot+24].try_into()?))?;
+        let payload_offset = slot + HEADER;
+        ensure!(len > 0 && len <= PAGE - payload_offset, "invalid payload length");
+        ensure!(u64::from_le_bytes(raw[slot+24..slot+32].try_into()?) == id, "extent identity mismatch");
+        std::str::from_utf8(&raw[payload_offset..payload_offset + len])?;
+        let descriptor = Descriptor { store_id: self.store_id, id, page: page_offset, offset: payload_offset, len };
+        let ptr = NonNull::new(raw[payload_offset..].as_ptr().cast_mut()).unwrap();
         drop(txn);
         let segment = Arc::new(SealedSegment {
             descriptor: descriptor.clone(),
@@ -538,3 +503,6 @@ mod tests {
 
 #[path="derived.rs"]
 mod derived;
+
+#[path="packed.rs"]
+mod packed;

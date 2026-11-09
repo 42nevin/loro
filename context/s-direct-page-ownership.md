@@ -50,3 +50,35 @@ of every derived segment, not just the Store facade. Advisory locks do not stop
 an arbitrary writer. Existing files must be created solely by this wrapper.
 This is feasibility evidence under a restrictive retention policy, not a general
 safe mmap API or production garbage collector.
+
+## Packed payload schema v2 (2026-11-09 experiment)
+
+The provider now hard-cuts payload storage to schema v2. Identity root 2 keys
+4/5 hold the payload version/magic; keys 0/1 remain the UUID and keys 2/3 remain
+reserved for the independent derived schema. Existing stores without the exact
+v2 marker are rejected using a read-only transaction. There is no migration or
+implicit old-format admission. Serialized descriptors require a page-relative
+`offset`; `page` still denotes a 4096-byte-aligned page, not a slot address.
+
+`insert_batch_bound` takes an explicit list of identities/lengths and invokes the
+caller's generator once per extent in input order, directly in newly allocated
+pages. Each slot is 8-byte aligned and has 32 header bytes: eight reserved bytes,
+magic, byte length, and extent identity. Root 0 indexes the page-plus-slot-header
+address. The single-extent maximum remains 4064 bytes. All extents are validated
+and committed in one private transaction before any lease escapes. Invalid UTF-8,
+duplicate identity, or generator panic cannot expose a partial batch. A later
+batch allocates fresh pages, never fills an earlier sealed page's remaining tail.
+This does not batch future keystrokes or change public-record publication.
+
+Each logical extent still has a distinct descriptor and lease, including when it
+shares a physical page with another extent. A lease retains the same environment
+owner and locks. No extent or page is reclaimed. The live binding cache is weak:
+it reuses authenticated leases but neither extends mapping lifetime nor replaces
+cold-reopen validation. A 64-by-256-byte batch uses five explicit payload pages
+and one private commit; this is a structural test, not an end-to-end latency claim.
+
+A live segment enters the weak index only after new allocation or successful
+on-disk validation. Each requested descriptor is compared in full. The final
+consumer removes its weak entry, so no persistent trust cache or dead-entry
+accumulation is introduced. Cache misses still check index, identity, range
+and UTF-8.
