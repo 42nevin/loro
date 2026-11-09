@@ -270,8 +270,20 @@ impl Store {
             ptr,
             len,
         });
-        self.live_segments.lock().unwrap().insert(descriptor.id, Arc::downgrade(&segment));
-        Ok((descriptor, BytesSlice::from_immutable(segment)))
+        // Another reader may have resolved the same immutable extent while
+        // this reader was in its read transaction. Converge on that live owner.
+        // Release the mutex before dropping the unused candidate segment, whose
+        // destructor also consults this map.
+        let winner = {
+            let mut cache = self.live_segments.lock().unwrap();
+            if let Some(existing) = cache.get(&id).and_then(Weak::upgrade) {
+                existing
+            } else {
+                cache.insert(id, Arc::downgrade(&segment));
+                segment.clone()
+            }
+        };
+        Ok((descriptor, BytesSlice::from_immutable(winner)))
     }
     pub fn get(&self, id: u64) -> Result<BytesSlice> {
         Ok(self.resolve(id)?.1)
@@ -451,6 +463,32 @@ mod tests {
         let before = reopened.metrics();
         assert_eq!(&*reopened.bind(&descriptor).unwrap(), b"abc");
         assert_eq!(reopened.metrics().resolutions, before.resolutions + 1);
+    }
+
+    #[test]
+    fn concurrent_cache_misses_share_one_live_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = unsafe { Store::open(&dir.path().join("concurrent")).unwrap() };
+        let (descriptor, bytes) = store.insert_bound(1, 3, &mut |out| out.copy_from_slice(b"abc")).unwrap();
+        drop(bytes);
+        let store = Arc::new(store);
+        for _ in 0..64 {
+            let barrier = Arc::new(std::sync::Barrier::new(8));
+            let threads: Vec<_> = (0..8).map(|_| {
+                let store = store.clone(); let descriptor = descriptor.clone(); let barrier = barrier.clone();
+                std::thread::spawn(move || { barrier.wait(); store.bind(&descriptor).unwrap() })
+            }).collect();
+            let owners: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+            assert!(owners.iter().all(|b| b.as_ptr() == owners[0].as_ptr()));
+            let segment = store.live_segments.lock().unwrap().get(&1).unwrap().upgrade().unwrap();
+            // Each BytesSlice has its own lightweight range wrapper, but every
+            // wrapper must retain the very same authenticated segment lease.
+            assert_eq!(Arc::strong_count(&segment), owners.len() + 1);
+            drop(segment);
+            assert_eq!(store.live_segments.lock().unwrap().len(), 1);
+            drop(owners);
+            assert!(store.live_segments.lock().unwrap().is_empty());
+        }
     }
 
     #[test]
