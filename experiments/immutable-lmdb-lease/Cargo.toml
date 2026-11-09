@@ -1,0 +1,24 @@
+[package]
+name = "immutable-lmdb-lease"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[workspace]
+[dependencies]
+append-only-bytes = "=0.1.12"
+loro = { path = "../../crates/loro", features = ["shared_arena_experiment"] }
+heed = "=0.22.1"
+anyhow = "1"
+fs2 = "0.4"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+[dev-dependencies]
+tempfile = "3"
+[patch.crates-io]
+append-only-bytes = { path = "../../crates/append-only-bytes" }
+generic-btree = { path = "../../crates/generic-btree" }
+loro-thunderdome = { path = "../../crates/loro-thunderdome" }
+[profile.dev]
+opt-level = 1
+debug = 0
+incremental = false
