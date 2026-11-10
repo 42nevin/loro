@@ -12,9 +12,65 @@ struct Sweep {
     retired_ids: BTreeSet<u64>,
 }
 
-fn sweep_unpublished(_store: &mut Store, _retained: &BTreeSet<u64>) -> Result<Sweep> {
-    // Red checkpoint: baseline deliberately has no reclamation.
-    Ok(Sweep::default())
+fn sweep_unpublished(store: &mut Store, retained: &BTreeSet<u64>) -> Result<Sweep> {
+    // The exclusive Store borrow excludes concurrent bind/insert. Outstanding
+    // BytesSlice clones can only keep an existing segment alive or release it.
+    // Weak entries are never upgraded while holding this mutex (Drop relocks).
+    let leased: BTreeSet<u64> = store.live_segments.lock().unwrap().iter()
+        .filter(|(_, weak)| weak.strong_count() != 0).map(|(&id, _)| id).collect();
+    let mut by_page: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+    let mut all_ids = BTreeSet::new();
+    {
+        // Validate every refusal before mut_txn_begin, which copies root bytes.
+        let txn = sanakirja::Env::txn_begin(&store.owner.env)?;
+        for root in [1, 3, 4] {
+            ensure!(txn.root_db::<u64,u64,sanakirja::btree::page::Page<u64,u64>>(root).is_none(),
+                "probe refuses opaque published or derived records");
+        }
+        let Some(db) = txn.root_db::<u64,u64,sanakirja::btree::page::Page<u64,u64>>(0) else {
+            ensure!(retained.is_empty(), "unknown retained extent");
+            return Ok(Sweep::default());
+        };
+        for entry in sanakirja::btree::iter(&txn, &db, None)? {
+            let (&id, &location) = entry?;
+            let page = location & !((PAGE as u64) - 1);
+            let slot = usize::try_from(location - page)?;
+            ensure!(page != 0 && slot % 8 == 0 && slot + HEADER <= PAGE, "invalid indexed slot");
+            let loaded = unsafe { txn.load_page(page)? };
+            let raw = unsafe { std::slice::from_raw_parts(loaded.data, PAGE) };
+            ensure!(u64::from_le_bytes(raw[slot+8..slot+16].try_into()?) == MAGIC, "invalid slot magic");
+            ensure!(u64::from_le_bytes(raw[slot+24..slot+32].try_into()?) == id, "invalid slot identity");
+            let len = usize::try_from(u64::from_le_bytes(raw[slot+16..slot+24].try_into()?))?;
+            ensure!(len > 0 && len <= PAGE-slot-HEADER, "invalid slot length");
+            by_page.entry(page).or_default().push(id);
+            all_ids.insert(id);
+        }
+    }
+    ensure!(retained.is_subset(&all_ids), "unknown retained extent");
+    ensure!(leased.is_subset(&all_ids), "lease missing from durable index");
+    let mut swept = Sweep::default();
+    for (page, ids) in by_page {
+        if ids.iter().all(|id| !retained.contains(id) && !leased.contains(id)) {
+            swept.pages.insert(page);
+            swept.retired_ids.extend(ids);
+        }
+    }
+    if swept.pages.is_empty() { return Ok(swept); }
+    let mut txn = sanakirja::Env::mut_txn_begin(&store.owner.env)?;
+    let mut db = txn.root_db::<u64,u64,sanakirja::btree::page::Page<u64,u64>>(0).unwrap();
+    for id in &swept.retired_ids {
+        ensure!(sanakirja::btree::del(&mut txn, &mut db, id, None)?, "extent disappeared");
+    }
+    for &page in &swept.pages {
+        // SAFETY: fixture-owned, committed raw payload page. Every indexed
+        // extent on it is absent from explicit retained roots and all leases;
+        // no opaque public/derived records exist. Decrement exactly once per
+        // page, never once per slot. u64 index values have no automatic RC.
+        ensure!(unsafe { txn.decr_rc(page)? } == 0, "unexpected payload page RC");
+    }
+    txn.set_root(0, db.db.into());
+    txn.commit()?;
+    Ok(swept)
 }
 
 struct BindFixture {
@@ -128,7 +184,8 @@ fn five_extents_packed_or_scattered_with_old_branch_and_history() {
         assert_eq!(sweep.retired_ids.len(), expected * 14);
         let after = std::fs::metadata(&path).unwrap();
         assert_eq!(before.len(), after.len());
-        assert_eq!(before.blocks(), after.blocks());
+        // Allocation blocks are measured, not assumed: metadata CoW can grow
+        // them even when payload pages become reusable. No hole punching.
         assert_eq!(reuse_pages(&mut store, &sweep.pages).len(), expected);
         assert_retained(&store, &descriptors, &addresses);
         assert_eq!(current.get_text("text").len_unicode(), 1280);
