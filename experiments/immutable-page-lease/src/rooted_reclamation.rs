@@ -685,3 +685,6 @@ mod tests {
     }
 
 }
+
+#[path = "loro_reclamation.rs"]
+mod loro_integration;

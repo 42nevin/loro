@@ -152,3 +152,18 @@ Run `bash experiments/immutable-page-lease/reproduce-rooted-reclamation.sh`.
 See [the durable-root model](../../context/rooted-reclamation-model.md) for the
 protocol, evidence and limitations. Its roots are synthetic; automatic Loro root
 discovery, production APIs, metadata GC and crash qualification remain unimplemented.
+
+## Actual Loro trusted-history adapter (2026-11-10)
+
+`src/loro_reclamation.rs` connects the controller to real Loro full-history
+capture, CoW branches and `TrustedHistorySource`. Four fresh processes verify
+unchanged Retained object references, document-only old-source pinning, actual
+allocator reuse, historical recovery of deleted text, late-device sync and full
+normalized JSON history equality. Binary state/history use a copying hex fixture
+envelope because this provider accepts UTF-8 payloads; this is not zero-copy or
+a production persistence format.
+
+Run `bash experiments/immutable-page-lease/reproduce-loro-reclamation.sh`.
+See [actual Loro integration and retention obligations](../../context/loro-history-reclamation-integration.md)
+for exact coverage and limits. Root retirement remains explicit; visible deletion
+never permits dropping authoritative history. No crash safety claim is made.

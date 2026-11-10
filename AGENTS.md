@@ -166,3 +166,5 @@ linked issues or traces when relevant.
   reproduced descriptor-identity ABA hazard: [context/page-reclamation-experiment.md](context/page-reclamation-experiment.md).
 - Test-only durable root/dependency manifests, issued-ID high-water marks, lazy
   root pins and fresh-process retention tests: [context/rooted-reclamation-model.md](context/rooted-reclamation-model.md).
+- Actual Loro capture/TrustedHistorySource page-reclamation integration, full-history
+  obligations and fresh-process evidence: [context/loro-history-reclamation-integration.md](context/loro-history-reclamation-integration.md).

@@ -131,8 +131,9 @@ No SIGKILL, power-loss, torn-write, media-error, disk-full or actual engine-I/O
 failure qualification is claimed. Recovery after those cases remains a required
 next step. Normal fresh-process reopen is not a crash test.
 
-The Current/History/EditingBranch labels and lazy objects are a synthetic storage
-graph. This does not integrate discovery with actual Loro accepted heads,
+At this model checkpoint, the Current/History/EditingBranch labels and lazy
+objects are a synthetic storage graph. The model alone does not integrate
+discovery with actual Loro accepted heads,
 `TrustedHistorySource`, `HistoryValue::Retained`, historical cuts or branch
 publication. The earlier native-document tests cover actual Loro handle lifetimes,
 but combining those paths with durable manifest publication is still work.
@@ -157,3 +158,12 @@ no-op in the ordinary top-level run; the driver executes its four real phases.
 Logs and JSONL live in `experiments/immutable-page-lease/results/` under the
 `rooted-reclamation` prefix. Existing dependency warnings remain. Clippy and
 rustfmt are not installed in this resumed toolchain; neither is claimed to pass.
+
+## Actual-Loro follow-on
+
+A subsequent adapter now obtains the dependency directory from real Loro capture
+and implements the actual `TrustedHistorySource` callback. It verifies old CoW
+source retention, historical checkout, late-device sync and complete normalized
+history after allocator reuse. See [loro-history-reclamation-integration.md](loro-history-reclamation-integration.md).
+The earlier synthetic tests and their 40-test checkpoint evidence remain distinct;
+the new full run includes both and records its own source hashes.

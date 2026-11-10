@@ -164,7 +164,7 @@ pub(super) fn reuse_pages(store: &mut Store, expected: &BTreeSet<u64>) -> BTreeS
     if expected.is_empty() { return BTreeSet::new(); }
     let mut txn = sanakirja::Env::mut_txn_begin(&store.owner.env).unwrap();
     let mut reused = BTreeSet::new();
-    for _ in 0..32 {
+    for _ in 0..expected.len() * 8 + 32 {
         // No prior read transaction remains. Only pages the engine allocates
         // may be overwritten; retained payload pages must never appear here.
         let page = unsafe { txn.alloc_page().unwrap() };

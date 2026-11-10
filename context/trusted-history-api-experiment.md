@@ -98,3 +98,13 @@ and every forward/reverse consumption order for the bounded fixture; it also
 checks that unconsumed and overlay-shadowed payloads are never read. Allocation
 measurements should use an isolated diagnostic overlay, not a permanent global
 allocator in the library tests.
+
+## Page-reclamation integration
+
+Verified against code 2026-11-10. The private provider test adapter now persists
+actual Written/Retained captures into versioned root graphs and uses a real
+`TrustedHistorySource` with immutable-object commitments and root pins. Its
+fresh-process tests retain full history through old-root page reuse, recover
+deleted text at an old frontier, merge an old-device update and compare complete
+normalized JSON history. This is an experiment, not a production root policy.
+See [loro-history-reclamation-integration.md](loro-history-reclamation-integration.md).
