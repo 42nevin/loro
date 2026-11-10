@@ -544,3 +544,7 @@ mod derived;
 
 #[path="packed.rs"]
 mod packed;
+
+#[cfg(test)]
+#[path = "reclamation_probe.rs"]
+mod reclamation_probe;
