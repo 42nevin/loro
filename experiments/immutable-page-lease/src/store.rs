@@ -297,7 +297,9 @@ impl Store {
         ensure!(&actual == expected, "conflicting extent descriptor");
         Ok(bytes)
     }
-    /// Publish metadata and its reference set atomically in the same environment.
+    /// Validate extent descriptors, then atomically publish opaque metadata.
+    /// The descriptor list is not persisted separately: callers must encode
+    /// durable reference edges in metadata. This API is not a GC root registry.
     /// Application receipt/acceptance validation is required before this call.
     /// Duplicate sequence keys are rejected, including byte-identical retries.
     pub fn publish(

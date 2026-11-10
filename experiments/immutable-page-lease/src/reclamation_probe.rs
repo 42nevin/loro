@@ -271,3 +271,223 @@ fn durable_roots_without_live_lease_and_public_metadata_fail_closed() {
     assert!(sweep_unpublished(&mut store, &BTreeSet::new()).is_err());
     assert_eq!(before, std::fs::read(&path).unwrap());
 }
+
+#[test]
+fn old_editing_branch_alone_pins_history_then_one_cloned_handle_pins_one_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("data");
+    let (mut store, descriptors) = fixture(&path, false);
+    let current = doc_from(&store, 0..70);
+    let cut = current.oplog_frontiers();
+    let history = current.fork_cow().unwrap();
+    history.checkout(&cut).unwrap();
+    let branch = current.fork_cow().unwrap();
+    branch.set_peer_id(19).unwrap();
+    current.get_text("text").delete(1280, 65 * 256).unwrap();
+    current.commit();
+    drop(current);
+    assert!(sweep_unpublished(&mut store, &BTreeSet::new()).unwrap().pages.is_empty());
+    assert_eq!(history.get_text("text").len_unicode(), 70 * 256);
+    drop(history);
+    // The editable old branch is now the only document. Current visibility and
+    // the lifetime of the document from which it forked do not determine liveness.
+    assert!(sweep_unpublished(&mut store, &BTreeSet::new()).unwrap().pages.is_empty());
+    branch.get_text("text").delete(0, 1).unwrap();
+    branch.commit();
+    assert_eq!(branch.get_text("text").len_unicode(), 70 * 256 - 1);
+    let lease = store.get(69).unwrap();
+    let address = lease.as_ptr() as usize;
+    let clone = lease.clone();
+    let (release, wait) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        wait.recv().unwrap();
+        assert_eq!(&*clone, &body(69));
+        assert_eq!(clone.as_ptr() as usize, address);
+    });
+    drop(lease);
+    drop(branch);
+    let first = sweep_unpublished(&mut store, &BTreeSet::new()).unwrap();
+    assert_eq!(first.pages.len(), 4);
+    assert!(!first.pages.contains(&descriptors[69].page));
+    reuse_pages(&mut store, &first.pages);
+    assert!(sweep_unpublished(&mut store, &BTreeSet::new()).unwrap().pages.is_empty());
+    release.send(()).unwrap();
+    worker.join().unwrap();
+    let last = sweep_unpublished(&mut store, &BTreeSet::new()).unwrap();
+    assert_eq!(last.pages, BTreeSet::from([descriptors[69].page]));
+    reuse_pages(&mut store, &last.pages);
+    println!("MEASUREMENT {{\"scenario\":\"branch_then_cross_thread_handle\",\"reclaimed_with_old_branch_only\":0,\"after_branch_drop\":4,\"after_final_clone_drop\":1,\"live_relocation_bytes\":0}}");
+}
+
+#[test]
+fn abandoning_private_branch_releases_only_its_unrooted_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("data");
+    let (mut store, descriptors) = fixture(&path, false);
+    let current = doc_from(&store, 0..5);
+    let addresses = handles(&current);
+    let branch = current.fork_cow().unwrap();
+    branch.set_peer_id(29).unwrap();
+    let (private, bytes) = store.insert_bound(70, 256, &mut |out| out.copy_from_slice(&body(70))).unwrap();
+    let mut allocator = BindFixture { id: 70, bytes };
+    branch.get_text("text").insert_unicode_with_allocator(1280, std::str::from_utf8(&body(70)).unwrap(), &mut allocator).unwrap();
+    branch.commit();
+    drop(allocator);
+    assert!(descriptors.iter().all(|d| d.page != private.page));
+    let first = sweep_unpublished(&mut store, &BTreeSet::new()).unwrap();
+    assert_eq!(first.pages.len(), 4);
+    assert!(!first.pages.contains(&private.page));
+    reuse_pages(&mut store, &first.pages);
+    assert_eq!(branch.get_text("text").len_unicode(), 1536);
+    assert_eq!(current.get_text("text").len_unicode(), 1280);
+    drop(branch);
+    let abandoned = sweep_unpublished(&mut store, &BTreeSet::new()).unwrap();
+    assert_eq!(abandoned.pages, BTreeSet::from([private.page]));
+    assert_eq!(abandoned.retired_ids, BTreeSet::from([70]));
+    reuse_pages(&mut store, &abandoned.pages);
+    assert_retained(&store, &descriptors, &addresses);
+    assert_eq!(current.get_text("text").len_unicode(), 1280);
+    println!("MEASUREMENT {{\"scenario\":\"abandoned_private_branch\",\"orphan_pages_first\":4,\"private_branch_page_after_drop\":1,\"current_page_retained\":1,\"live_relocation_bytes\":0}}");
+}
+
+#[test]
+fn restored_explicit_roots_pin_pages_without_live_bindings() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("data");
+    let (store, descriptors) = fixture(&path, false);
+    drop(store);
+    let mut store = unsafe { Store::open(&path).unwrap() };
+    assert!(store.live_segments.lock().unwrap().is_empty());
+    // This explicit set represents a fully reconstructed fixture root. It is
+    // supplied by the test, not automatically decoded from application metadata.
+    let retained = BTreeSet::from([0, 69]);
+    let first = sweep_unpublished(&mut store, &retained).unwrap();
+    assert_eq!(first.pages.len(), 3);
+    reuse_pages(&mut store, &first.pages);
+    for id in &retained {
+        assert_eq!(&*store.bind(&descriptors[*id as usize]).unwrap(), &body(*id));
+    }
+    assert!(store.live_segments.lock().unwrap().is_empty());
+    // Releasing one historical root makes its whole page collectible, without
+    // touching the still-retained root's page.
+    let released = sweep_unpublished(&mut store, &BTreeSet::from([0])).unwrap();
+    assert_eq!(released.pages, BTreeSet::from([descriptors[69].page]));
+    reuse_pages(&mut store, &released.pages);
+    assert_eq!(&*store.bind(&descriptors[0]).unwrap(), &body(0));
+    println!("MEASUREMENT {{\"scenario\":\"restored_explicit_roots\",\"live_leases\":0,\"initial_reclaimed\":3,\"after_one_root_release\":1,\"root_discovery_implemented\":false}}");
+}
+
+#[test]
+fn opaque_public_objects_and_heads_each_refuse_after_fresh_reopen() {
+    for root in [1, 3, 4] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data");
+        let mut store = unsafe { Store::open(&path).unwrap() };
+        if root != 1 { store.init_derived_v1().unwrap(); }
+        let (descriptor, bytes) = store.insert_bound(0, 256, &mut |out| out.copy_from_slice(&body(0))).unwrap();
+        match root {
+            1 => store.publish(0, b"opaque without encoded edge list", &[descriptor.clone()]).unwrap(),
+            3 => store.derived_put(0, b"opaque object may refer to payload").unwrap(),
+            4 => store.derived_publish_head(0, b"opaque head may refer to payload", &[]).unwrap(),
+            _ => unreachable!(),
+        }
+        drop(bytes);
+        drop(store);
+        let mut store = unsafe { Store::open(&path).unwrap() };
+        assert!(store.live_segments.lock().unwrap().is_empty());
+        if root == 1 {
+            assert_eq!(store.published(0).unwrap().unwrap(), b"opaque without encoded edge list");
+        }
+        let before = std::fs::read(&path).unwrap();
+        let error = sweep_unpublished(&mut store, &BTreeSet::new()).unwrap_err();
+        assert!(error.to_string().contains("opaque published or derived records"));
+        assert_eq!(before, std::fs::read(&path).unwrap());
+        assert_eq!(&*store.bind(&descriptor).unwrap(), &body(0));
+        println!("MEASUREMENT {{\"scenario\":\"opaque_root_after_reopen\",\"root_slot\":{root},\"live_leases\":0,\"refused_without_writes\":true}}");
+    }
+}
+
+#[test]
+fn characterization_retired_identity_reuse_can_reauthenticate_stale_descriptor() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("data");
+    let mut store = unsafe { Store::open(&path).unwrap() };
+    let mut seen = BTreeMap::<u64, (Descriptor, u8)>::new();
+    // Intentional counterexample, not a supported lifetime: a bare Descriptor
+    // is not a lease or a registered root. The allocator only rejects IDs still
+    // in root 0. With reclamation bolted on, old IDs can name different bytes.
+    for generation in 0..64u8 {
+        let fill = b'!' + generation;
+        let (descriptor, bytes) = store.insert_bound(7, 256, &mut |out| out.fill(fill)).unwrap();
+        if let Some((stale, original)) = seen.get(&descriptor.page) {
+            assert_eq!(stale, &descriptor);
+            assert_ne!(*original, fill);
+            assert_eq!(&*store.bind(stale).unwrap(), vec![fill; 256]);
+            println!("MEASUREMENT {{\"scenario\":\"retired_id_aba_counterexample\",\"generation\":{generation},\"stale_descriptor_accepted_different_bytes\":true,\"production_gc_safe\":false}}");
+            return;
+        }
+        seen.insert(descriptor.page, (descriptor, fill));
+        drop(bytes);
+        let swept = sweep_unpublished(&mut store, &BTreeSet::new()).unwrap();
+        assert_eq!(swept.retired_ids, BTreeSet::from([7]));
+        assert!(store.get(7).is_err());
+    }
+    panic!("pinned allocator did not reproduce descriptor ABA within 64 generations");
+}
+
+#[test]
+fn abort_before_reclamation_commit_preserves_logical_index_and_payloads() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("data");
+    let (mut store, descriptors) = fixture(&path, false);
+    let retired_page = descriptors[0].page;
+    {
+        let mut txn = sanakirja::Env::mut_txn_begin(&store.owner.env).unwrap();
+        let mut db = txn.root_db::<u64, u64, sanakirja::btree::page::Page<u64, u64>>(0).unwrap();
+        for descriptor in descriptors.iter().filter(|d| d.page == retired_page) {
+            assert!(sanakirja::btree::del(&mut txn, &mut db, &descriptor.id, None).unwrap());
+        }
+        assert_eq!(unsafe { txn.decr_rc(retired_page).unwrap() }, 0);
+        txn.set_root(0, db.db.into());
+        // decr_rc queues committed pages, not same-transaction owned frees.
+        for _ in 0..4 {
+            assert_ne!(unsafe { txn.alloc_page().unwrap() }.0.offset, retired_page);
+        }
+        // Abort BEFORE commit. This is not a failed-commit or crash simulation.
+    }
+    for descriptor in &descriptors {
+        assert_eq!(&*store.bind(descriptor).unwrap(), &body(descriptor.id));
+    }
+    // All original pages are still allocated and can be swept once, not twice.
+    let swept = sweep_unpublished(&mut store, &BTreeSet::new()).unwrap();
+    assert_eq!(swept.pages.len(), 5);
+    reuse_pages(&mut store, &swept.pages);
+    drop(store);
+    let reopened = unsafe { Store::open(&path).unwrap() };
+    assert!(descriptors.iter().all(|d| reopened.bind(d).is_err()));
+    println!("MEASUREMENT {{\"scenario\":\"abort_before_sweep_commit\",\"restored_logical_extents\":70,\"next_successful_sweep\":5,\"crash_test\":false}}");
+}
+
+#[test]
+fn characterization_pinned_engine_remove_root_keeps_committed_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("raw-engine-fixture");
+    {
+        let env = sanakirja::Env::new(&path, (64 * PAGE) as u64, 2).unwrap();
+        let mut txn = sanakirja::Env::mut_txn_begin(&env).unwrap();
+        let mut db = unsafe { sanakirja::btree::create_db::<_, u64, u64>(&mut txn).unwrap() };
+        sanakirja::btree::put(&mut txn, &mut db, &10, &20).unwrap();
+        txn.set_root(5, db.db.into());
+        txn.commit().unwrap();
+        let mut txn = sanakirja::Env::mut_txn_begin(&env).unwrap();
+        txn.remove_root(5);
+        txn.commit().unwrap();
+    }
+    let env = sanakirja::Env::new(&path, (64 * PAGE) as u64, 2).unwrap();
+    let txn = sanakirja::Env::txn_begin(&env).unwrap();
+    // Pinned 1.4.3 commit skips zero pending roots, so remove_root does not
+    // implement durable root retirement. Keep an explicit registry/tombstone.
+    let db = txn.root_db::<u64, u64, sanakirja::btree::page::Page<u64, u64>>(5).unwrap();
+    assert_eq!(sanakirja::btree::get(&txn, &db, &10, None).unwrap(), Some((&10, &20)));
+    println!("MEASUREMENT {{\"scenario\":\"engine_remove_root_counterexample\",\"root_still_present_after_reopen\":true}}");
+}

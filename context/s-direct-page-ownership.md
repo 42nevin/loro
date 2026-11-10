@@ -82,3 +82,12 @@ on-disk validation. Each requested descriptor is compared in full. The final
 consumer removes its weak entry, so no persistent trust cache or dead-entry
 accumulation is introduced. Cache misses still check index, identity, range
 and UTF-8.
+
+## Test-only reclamation qualification (2026-11-10)
+
+The public retention guarantees above are unchanged. A closed-world test-only
+probe now retires unpublished pages only after every extent on a page is absent
+from explicit roots and live leases. It refuses opaque published/derived roots.
+It also reproduces descriptor ABA when retired IDs are reused, so it must not be
+promoted to a public collector. See [page-reclamation-experiment.md](page-reclamation-experiment.md)
+for lifecycle measurements and the required durable reachability/identity gates.

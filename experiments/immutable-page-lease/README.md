@@ -121,3 +121,19 @@ On Linux the inode lock is an OFD record lock, separate from Sanakirja's own flo
 write lock. Existing aliases are rejected before mapping. Arbitrary external
 writers and file replacement are still excluded by the unsafe caller contract.
 See `context/s-direct-page-ownership.md` for the pinned engine source audit.
+
+## Whole-page reclamation probe (2026-11-10)
+
+`src/reclamation_probe.rs` is a test-only exception to the public append-only
+policy. It retires whole unrooted, unleased pages in a closed-world unpublished
+fixture and proves allocator reuse, including old editing branches and
+cross-thread handles. It refuses opaque public/derived roots after reopen.
+It also reproduces a stale-descriptor ABA counterexample after retired IDs are
+reused. **There is no production GC API and the identity hazard is not fixed.**
+
+Run `bash experiments/immutable-page-lease/reproduce-reclamation.sh` from the
+checkout, optionally with `CARGO_NET_OFFLINE=true` after dependencies are cached.
+See [the experiment and architectural gates](../../context/page-reclamation-experiment.md)
+for measurements, retained-history limits, required durable root/ID policy and
+unverified crash boundaries. Allocator reuse does not shrink the file or return
+filesystem blocks.

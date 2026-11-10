@@ -162,3 +162,5 @@ linked issues or traces when relevant.
   and failed-candidate disposal: [context/trusted-history-api-experiment.md](context/trusted-history-api-experiment.md).
 
 - Latest-state VV lookup and original-DAG regression evidence: [context/current-state-vv-shortcut.md](context/current-state-vv-shortcut.md).
+- Test-only whole-page reclamation, branch/lease pins, opaque-root refusal and the
+  reproduced descriptor-identity ABA hazard: [context/page-reclamation-experiment.md](context/page-reclamation-experiment.md).
