@@ -7,12 +7,23 @@ use std::collections::BTreeSet;
 use std::os::unix::fs::MetadataExt;
 
 #[derive(Debug, Default)]
-struct Sweep {
-    pages: BTreeSet<u64>,
-    retired_ids: BTreeSet<u64>,
+pub(super) struct Sweep {
+    pub(super) pages: BTreeSet<u64>,
+    pub(super) retired_ids: BTreeSet<u64>,
 }
 
 fn sweep_unpublished(store: &mut Store, retained: &BTreeSet<u64>) -> Result<Sweep> {
+    sweep_with_manifest(store, retained, None)
+}
+
+// Only the sibling test-only rooted controller supplies a sequence, after
+// validating and tracing its complete versioned manifest under an exclusive
+// Store borrow. The unpublished entry point refuses that extra root entirely.
+pub(super) fn sweep_with_manifest(
+    store: &mut Store,
+    retained: &BTreeSet<u64>,
+    manifest_sequence: Option<u64>,
+) -> Result<Sweep> {
     // The exclusive Store borrow excludes concurrent bind/insert. Outstanding
     // BytesSlice clones can only keep an existing segment alive or release it.
     // Weak entries are never upgraded while holding this mutex (Drop relocks).
@@ -26,6 +37,16 @@ fn sweep_unpublished(store: &mut Store, retained: &BTreeSet<u64>) -> Result<Swee
         for root in [1, 3, 4] {
             ensure!(txn.root_db::<u64,u64,sanakirja::btree::page::Page<u64,u64>>(root).is_none(),
                 "probe refuses opaque published or derived records");
+        }
+        let manifest_db = txn.root_db::<u64,u64,sanakirja::btree::page::Page<u64,u64>>(5);
+        match (manifest_sequence, manifest_db) {
+            (None, None) => {},
+            (Some(expected), Some(db)) => {
+                let mut iter = sanakirja::btree::rev_iter(&txn, &db, None)?;
+                let (&actual, _) = iter.next().ok_or_else(|| anyhow::anyhow!("empty manifest index"))??;
+                ensure!(actual == expected, "manifest changed before sweep");
+            },
+            _ => anyhow::bail!("probe refuses untraced manifest root"),
         }
         let Some(db) = txn.root_db::<u64,u64,sanakirja::btree::page::Page<u64,u64>>(0) else {
             ensure!(retained.is_empty(), "unknown retained extent");
@@ -139,7 +160,7 @@ fn assert_retained(store: &Store, descriptors: &[Descriptor], addresses: &BTreeM
         assert_eq!(&*bytes, &body(id));
     }
 }
-fn reuse_pages(store: &mut Store, expected: &BTreeSet<u64>) -> BTreeSet<u64> {
+pub(super) fn reuse_pages(store: &mut Store, expected: &BTreeSet<u64>) -> BTreeSet<u64> {
     if expected.is_empty() { return BTreeSet::new(); }
     let mut txn = sanakirja::Env::mut_txn_begin(&store.owner.env).unwrap();
     let mut reused = BTreeSet::new();

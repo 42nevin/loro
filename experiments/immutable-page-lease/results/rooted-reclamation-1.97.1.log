@@ -1,0 +1,421 @@
+cargo 1.97.1 (c980f4866 2026-06-30)
+rustc 1.97.1 (8bab26f4f 2026-07-14)
+60049129d2367b1611d5b4352b11e58da7f8c305ef91ad5f1bf069b5652e18c6  Cargo.toml
+9993ea2d0cf0a6dfdf18c3b2d047a7074d58510549160654513ba7de4acd4fde  Cargo.lock
+1f1751059d1f46cb4c13f931f3b9c80a9f320c8ef49bc8ec572e741ceab3e480  src/rooted_reclamation.rs
+dce14cca9da961d5447f694bf06c06939fc92dedb9c221db177405b97840297c  src/reclamation_probe.rs
+5e2123eaf7b996dcc191cd203f9c1a2b7feca9508bd9df07e43ec80c6737afd4  src/store.rs
+warning: unused import: `logging::log::*`
+  --> /home/agent/Gits/Redelkasten/worktrees/loro-page-reclamation/crates/loro-common/src/lib.rs:21:9
+   |
+21 | pub use logging::log::*;
+   |         ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `loro-common` (lib) generated 1 warning (run `cargo fix --lib -p loro-common` to apply 1 suggestion)
+warning: method `as_str` is never used
+    --> /home/agent/Gits/Redelkasten/worktrees/loro-page-reclamation/crates/loro-internal/src/container/richtext/richtext_state.rs:1011:12
+     |
+ 998 | impl RichtextStateChunk {
+     | ----------------------- method in this implementation
+...
+1011 |     pub fn as_str(&self) -> Option<std::borrow::Cow<'_, str>> {
+     |            ^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `as_str` and `unicode_slice` are never used
+   --> /home/agent/Gits/Redelkasten/worktrees/loro-page-reclamation/crates/loro-internal/src/container/richtext/richtext_state.rs:380:16
+    |
+338 |     impl TextChunk {
+    |     -------------- methods in this implementation
+...
+380 |         pub fn as_str(&self) -> std::borrow::Cow<'_, str> {
+    |                ^^^^^^
+...
+530 |         pub fn unicode_slice(
+    |                ^^^^^^^^^^^^^
+
+warning: type does not implement `std::fmt::Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+  --> /home/agent/Gits/Redelkasten/worktrees/loro-page-reclamation/crates/loro-internal/src/encoding/native_value_visitor.rs:33:1
+   |
+33 | / pub enum JsonNativeValueMut<'a> {
+34 | |     Value(&'a mut LoroValue),
+35 | |     Float(&'a mut f64),
+36 | | }
+   | |_^
+   |
+note: the lint level is defined here
+  --> /home/agent/Gits/Redelkasten/worktrees/loro-page-reclamation/crates/loro-internal/src/lib.rs:13:9
+   |
+13 | #![warn(missing_debug_implementations)]
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `loro-internal` (lib) generated 3 warnings
+    Finished `test` profile [optimized] target(s) in 0.08s
+     Running unittests src/lib.rs (target/debug/deps/immutable_page_lease-2f84122dc6a243da)
+
+running 32 tests
+test store::packed::tests::batch_packs_without_copy_and_reopens_each_identity ... ok
+test store::reclamation_probe::abort_before_reclamation_commit_preserves_logical_index_and_payloads ... ok
+test store::packed::tests::pre_v2_store_is_refused_without_rewriting_bytes ... ok
+test store::packed::tests::batch_abort_does_not_publish_partial_extents ... ok
+test store::reclamation_probe::characterization_retired_identity_reuse_can_reauthenticate_stale_descriptor ... ok
+test store::reclamation_probe::characterization_pinned_engine_remove_root_keeps_committed_root ... ok
+test store::reclamation_probe::abandoning_private_branch_releases_only_its_unrooted_page ... ok
+test store::reclamation_probe::long_lived_lease_delays_whole_page_not_other_pages ... ok
+test store::packed::tests::packed_consumers_keep_mapping_and_lock_after_store_drop ... ok
+test store::reclamation_probe::restored_explicit_roots_pin_pages_without_live_bindings ... ok
+test store::rooted_reclamation::tests::fresh_process_phase ... ok
+test store::reclamation_probe::five_extents_packed_or_scattered_with_old_branch_and_history ... ok
+test store::reclamation_probe::old_editing_branch_alone_pins_history_then_one_cloned_handle_pins_one_page ... ok
+test store::rooted_reclamation::tests::abandoned_failed_and_panicking_allocations_burn_durable_ids ... ok
+test store::rooted_reclamation::tests::lazy_pin_clones_keep_exclusion_after_controller_drop ... ok
+test store::rooted_reclamation::tests::durable_nonreused_ids_reject_stale_descriptor_after_actual_page_reuse ... ok
+test store::rooted_reclamation::tests::legacy_index_without_manifest_is_not_adopted ... ok
+test store::rooted_reclamation::tests::traced_roots_and_byte_leases_respect_packed_page_boundaries ... ok
+test store::reclamation_probe::durable_roots_without_live_lease_and_public_metadata_fail_closed ... ok
+test store::tests::direct_owner_and_atomic_public_metadata ... ok
+test store::reclamation_probe::opaque_public_objects_and_heads_each_refuse_after_fresh_reopen ... ok
+test store::rooted_reclamation::tests::counter_exhaustion_and_foreign_pin_are_read_only_refusals ... ok
+test tests::failed_or_panicking_generation_publishes_no_lease ... ok
+test store::tests::live_binding_reuses_validation_without_retaining_consumers ... ok
+test store::rooted_reclamation::tests::lost_success_after_actual_commits_fail_stops_and_reopens_disk_state ... ok
+test store::rooted_reclamation::tests::shared_roots_and_lazy_history_survive_fresh_processes ... ok
+test tests::loro_native_sync_cuts_forks_and_reopen ... ok
+test store::rooted_reclamation::tests::untraced_or_stale_manifest_sweep_is_refused_before_writes ... ok
+test store::rooted_reclamation::tests::invalid_latest_schema_or_graph_refuses_without_fallback_or_writes ... ok
+test tests::committed_lease_survives_writes_growth_store_drop_and_threads ... ok
+test store::reclamation_probe::visible_deletion_does_not_retire_native_history ... ok
+test store::tests::concurrent_cache_misses_share_one_live_owner ... ok
+
+successes:
+
+---- store::reclamation_probe::abort_before_reclamation_commit_preserves_logical_index_and_payloads stdout ----
+MEASUREMENT {"scenario":"abort_before_sweep_commit","restored_logical_extents":70,"next_successful_sweep":5,"crash_test":false}
+
+---- store::packed::tests::batch_abort_does_not_publish_partial_extents stdout ----
+
+thread 'store::packed::tests::batch_abort_does_not_publish_partial_extents' (47) panicked at src/packed.rs:132:80:
+batch abort
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- store::reclamation_probe::characterization_retired_identity_reuse_can_reauthenticate_stale_descriptor stdout ----
+MEASUREMENT {"scenario":"retired_id_aba_counterexample","generation":2,"stale_descriptor_accepted_different_bytes":true,"production_gc_safe":false}
+
+---- store::reclamation_probe::characterization_pinned_engine_remove_root_keeps_committed_root stdout ----
+MEASUREMENT {"scenario":"engine_remove_root_counterexample","root_still_present_after_reopen":true}
+
+---- store::reclamation_probe::abandoning_private_branch_releases_only_its_unrooted_page stdout ----
+MEASUREMENT {"scenario":"abandoned_private_branch","orphan_pages_first":4,"private_branch_page_after_drop":1,"current_page_retained":1,"live_relocation_bytes":0}
+
+---- store::reclamation_probe::long_lived_lease_delays_whole_page_not_other_pages stdout ----
+MEASUREMENT {"scenario":"long_lease","first_sweep":3,"after_lease_drop":1,"live_relocation_bytes":0}
+
+---- store::reclamation_probe::restored_explicit_roots_pin_pages_without_live_bindings stdout ----
+MEASUREMENT {"scenario":"restored_explicit_roots","live_leases":0,"initial_reclaimed":3,"after_one_root_release":1,"root_discovery_implemented":false}
+
+---- store::reclamation_probe::five_extents_packed_or_scattered_with_old_branch_and_history stdout ----
+MEASUREMENT {"scenario":"five_live","layout":"concentrated","payload_pages":5,"retained_extents":5,"baseline_reclaimed":0,"probe_reclaimed":4,"allocator_reused":4,"retired_ids":56,"file_before":262144,"file_after_sweep":262144,"allocated_before":36864,"allocated_after_sweep":45056,"live_relocation_bytes":0,"old_branch_edit":true,"historical_view":true}
+MEASUREMENT {"scenario":"five_live","layout":"scattered","payload_pages":5,"retained_extents":5,"baseline_reclaimed":0,"probe_reclaimed":0,"allocator_reused":0,"retired_ids":0,"file_before":262144,"file_after_sweep":262144,"allocated_before":36864,"allocated_after_sweep":36864,"live_relocation_bytes":0,"old_branch_edit":true,"historical_view":true}
+
+---- store::reclamation_probe::old_editing_branch_alone_pins_history_then_one_cloned_handle_pins_one_page stdout ----
+MEASUREMENT {"scenario":"branch_then_cross_thread_handle","reclaimed_with_old_branch_only":0,"after_branch_drop":4,"after_final_clone_drop":1,"live_relocation_bytes":0}
+
+---- store::rooted_reclamation::tests::abandoned_failed_and_panicking_allocations_burn_durable_ids stdout ----
+
+thread 'store::rooted_reclamation::tests::abandoned_failed_and_panicking_allocations_burn_durable_ids' (63) panicked at src/rooted_reclamation.rs:493:48:
+abandoned generated allocation
+MEASUREMENT {"scenario":"burned_identity_reservations","abandoned_id":0,"invalid_utf8_id":1,"panicked_id":2,"next_successful_id":3,"fail_stop_enforced":true}
+
+---- store::rooted_reclamation::tests::durable_nonreused_ids_reject_stale_descriptor_after_actual_page_reuse stdout ----
+MEASUREMENT {"scenario":"durable_identity_prevents_aba","physical_location_reused":true,"generation":2,"stale_descriptor_rejected_before_and_after_reopen":true}
+
+---- store::rooted_reclamation::tests::traced_roots_and_byte_leases_respect_packed_page_boundaries stdout ----
+MEASUREMENT {"scenario":"rooted_packed_pages","payload_pages":2,"with_both_roots":0,"after_one_root_retired":1,"with_final_byte_lease":0,"after_lease_drop":1}
+
+---- store::reclamation_probe::opaque_public_objects_and_heads_each_refuse_after_fresh_reopen stdout ----
+MEASUREMENT {"scenario":"opaque_root_after_reopen","root_slot":1,"live_leases":0,"refused_without_writes":true}
+MEASUREMENT {"scenario":"opaque_root_after_reopen","root_slot":3,"live_leases":0,"refused_without_writes":true}
+MEASUREMENT {"scenario":"opaque_root_after_reopen","root_slot":4,"live_leases":0,"refused_without_writes":true}
+
+---- tests::failed_or_panicking_generation_publishes_no_lease stdout ----
+
+thread 'tests::failed_or_panicking_generation_publishes_no_lease' (90) panicked at src/lib.rs:160:52:
+abandon reservation
+
+---- store::rooted_reclamation::tests::lost_success_after_actual_commits_fail_stops_and_reopens_disk_state stdout ----
+MEASUREMENT {"scenario":"lost_commit_acknowledgments","actual_successful_commits":3,"fail_stop_and_reopen_verified":true,"engine_io_failure_injected":false,"crash_test":false}
+
+---- store::rooted_reclamation::tests::shared_roots_and_lazy_history_survive_fresh_processes stdout ----
+
+running 1 test
+test store::rooted_reclamation::tests::fresh_process_phase ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 31 filtered out; finished in 0.00s
+
+
+running 1 test
+MEASUREMENT {"scenario":"durable_shared_roots","fresh_process":true,"orphan_retired":1,"one_root_unique_retired":1,"shared_retained":true,"payload_bindings_before_first_read":0}
+test store::rooted_reclamation::tests::fresh_process_phase ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 31 filtered out; finished in 0.00s
+
+
+running 1 test
+MEASUREMENT {"scenario":"retired_durable_root_with_lazy_pin","reclaimed_while_unread_pin_alive":0,"after_pin_drop_with_byte_lease":1,"after_last_byte_lease":1}
+test store::rooted_reclamation::tests::fresh_process_phase ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 31 filtered out; finished in 0.00s
+
+
+running 1 test
+MEASUREMENT {"scenario":"retired_roots_reopen","tombstones_preserved":true,"dead_metadata_admitted":true,"collected_objects_cannot_be_republished":true,"next_extent_id":4}
+test store::rooted_reclamation::tests::fresh_process_phase ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 31 filtered out; finished in 0.00s
+
+
+---- tests::committed_lease_survives_writes_growth_store_drop_and_threads stdout ----
+lease_sample extents=180 payload_bytes=724954 initialized_page_bytes=737280 owner_copy_bytes=0 initial_file_bytes=262144 final_file_bytes=786432 retained_pointer_equal=true
+
+---- store::reclamation_probe::visible_deletion_does_not_retire_native_history stdout ----
+MEASUREMENT {"scenario":"deleted_visible_text","layout":"concentrated","visible_extents":5,"history_retained_extents":70,"reclaimed_with_branch_and_view":0,"reclaimed_after_branch_and_view_drop":0,"reclaimed_after_all_docs_drop_unpublished_only":5}
+MEASUREMENT {"scenario":"deleted_visible_text","layout":"scattered","visible_extents":5,"history_retained_extents":70,"reclaimed_with_branch_and_view":0,"reclaimed_after_branch_and_view_drop":0,"reclaimed_after_all_docs_drop_unpublished_only":5}
+
+
+successes:
+    store::packed::tests::batch_abort_does_not_publish_partial_extents
+    store::packed::tests::batch_packs_without_copy_and_reopens_each_identity
+    store::packed::tests::packed_consumers_keep_mapping_and_lock_after_store_drop
+    store::packed::tests::pre_v2_store_is_refused_without_rewriting_bytes
+    store::reclamation_probe::abandoning_private_branch_releases_only_its_unrooted_page
+    store::reclamation_probe::abort_before_reclamation_commit_preserves_logical_index_and_payloads
+    store::reclamation_probe::characterization_pinned_engine_remove_root_keeps_committed_root
+    store::reclamation_probe::characterization_retired_identity_reuse_can_reauthenticate_stale_descriptor
+    store::reclamation_probe::durable_roots_without_live_lease_and_public_metadata_fail_closed
+    store::reclamation_probe::five_extents_packed_or_scattered_with_old_branch_and_history
+    store::reclamation_probe::long_lived_lease_delays_whole_page_not_other_pages
+    store::reclamation_probe::old_editing_branch_alone_pins_history_then_one_cloned_handle_pins_one_page
+    store::reclamation_probe::opaque_public_objects_and_heads_each_refuse_after_fresh_reopen
+    store::reclamation_probe::restored_explicit_roots_pin_pages_without_live_bindings
+    store::reclamation_probe::visible_deletion_does_not_retire_native_history
+    store::rooted_reclamation::tests::abandoned_failed_and_panicking_allocations_burn_durable_ids
+    store::rooted_reclamation::tests::counter_exhaustion_and_foreign_pin_are_read_only_refusals
+    store::rooted_reclamation::tests::durable_nonreused_ids_reject_stale_descriptor_after_actual_page_reuse
+    store::rooted_reclamation::tests::fresh_process_phase
+    store::rooted_reclamation::tests::invalid_latest_schema_or_graph_refuses_without_fallback_or_writes
+    store::rooted_reclamation::tests::lazy_pin_clones_keep_exclusion_after_controller_drop
+    store::rooted_reclamation::tests::legacy_index_without_manifest_is_not_adopted
+    store::rooted_reclamation::tests::lost_success_after_actual_commits_fail_stops_and_reopens_disk_state
+    store::rooted_reclamation::tests::shared_roots_and_lazy_history_survive_fresh_processes
+    store::rooted_reclamation::tests::traced_roots_and_byte_leases_respect_packed_page_boundaries
+    store::rooted_reclamation::tests::untraced_or_stale_manifest_sweep_is_refused_before_writes
+    store::tests::concurrent_cache_misses_share_one_live_owner
+    store::tests::direct_owner_and_atomic_public_metadata
+    store::tests::live_binding_reuses_validation_without_retaining_consumers
+    tests::committed_lease_survives_writes_growth_store_drop_and_threads
+    tests::failed_or_panicking_generation_publishes_no_lease
+    tests::loro_native_sync_cuts_forks_and_reopen
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/derived_keyspace.rs (target/debug/deps/derived_keyspace-fc8088ac9cd8d259)
+
+running 4 tests
+test abandoned_objects_do_not_reuse_ids_or_block_next_head ... ok
+test derived_keyspace_does_not_pollute_dense_canonical_ids ... ok
+test incomplete_or_stale_derived_head_cannot_replace_committed_head ... ok
+test derived_schema_refuses_legacy_without_mutating_file ... ok
+
+successes:
+
+successes:
+    abandoned_objects_do_not_reuse_ids_or_block_next_head
+    derived_keyspace_does_not_pollute_dense_canonical_ids
+    derived_schema_refuses_legacy_without_mutating_file
+    incomplete_or_stale_derived_head_cannot_replace_committed_head
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/independent_store.rs (target/debug/deps/independent_store-03932bf4be3a2529)
+
+running 4 tests
+test independent_metadata_multiple_pages_and_empty_record ... ok
+test independent_private_visibility_descriptor_rejection_and_lease_lock ... ok
+test existing_open_and_identity_read_preserve_every_file_byte ... ok
+test existing_without_identity_is_rejected_without_initializing_or_growing ... ok
+
+successes:
+
+---- independent_private_visibility_descriptor_rejection_and_lease_lock stdout ----
+independent_store private_only_visible=false missing_conflicting_rejected=4 direct_reads=1000 lookup_delta=0 transaction_delta=0 lease_lock_survives_facade=true
+
+
+successes:
+    existing_open_and_identity_read_preserve_every_file_byte
+    existing_without_identity_is_rejected_without_initializing_or_growing
+    independent_metadata_multiple_pages_and_empty_record
+    independent_private_visibility_descriptor_rejection_and_lease_lock
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests immutable_page_lease
+
+running 0 tests
+
+successes:
+
+successes:
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Checking cfg-if v1.0.5
+    Checking libc v0.2.191
+    Checking serde_core v1.0.229
+    Checking scopeguard v1.2.0
+    Checking byteorder v1.5.0
+    Checking num-traits v0.2.19
+    Checking stable_deref_trait v1.2.1
+    Checking zerocopy v0.8.63
+    Checking either v1.19.0
+    Checking once_cell v1.21.4
+    Checking thiserror v2.0.21
+    Checking lock_api v0.4.14
+    Checking typenum v1.20.1
+    Checking hash32 v0.2.1
+    Checking hash32 v0.3.1
+    Checking itertools v0.11.0
+    Checking thiserror v1.0.69
+    Checking spin v0.9.9
+    Checking cobs v0.3.0
+    Checking rustc-hash v2.1.3
+    Checking memchr v2.8.3
+    Checking psm v0.1.32
+    Checking zmij v1.0.23
+    Checking append-only-bytes v0.1.12 (/home/agent/Gits/Redelkasten/worktrees/loro-page-reclamation/crates/append-only-bytes)
+    Checking unicode-ident v1.0.27
+    Checking itoa v1.0.18
+    Checking proc-macro2 v1.0.107
+    Checking arbitrary v1.5.0
+    Checking num-integer v0.1.47
+    Checking num-complex v0.4.6
+    Checking num-bigint v0.4.8
+    Checking bitmaps v2.1.0
+    Checking num-iter v0.1.46
+    Checking heapless v0.9.3
+    Checking tracing-core v0.1.36
+    Checking getrandom v0.2.17
+    Checking getrandom v0.3.4
+    Checking rand_core v0.6.4
+    Checking stacker v0.1.25
+    Checking loro-thunderdome v0.6.2 (/home/agent/Gits/Redelkasten/worktrees/loro-page-reclamation/crates/loro-thunderdome)
+    Checking hashbrown v0.16.1
+    Checking sized-chunks v0.6.5
+    Checking leb128 v0.2.7
+    Checking rand_xoshiro v0.6.0
+    Checking equivalent v1.0.3
+    Checking arref v0.1.0
+    Checking pin-project-lite v0.2.17
+    Checking nonmax v0.5.5
+    Checking twox-hash v2.1.5
+    Checking tracing v0.1.44
+    Checking lz4_flex v0.11.6
+    Checking pest_stack_guard v1.0.1
+    Checking heapless v0.8.0
+    Checking instant v0.1.13
+    Checking yansi v1.0.1
+    Checking diff v0.1.13
+    Checking xxhash-rust v0.8.19
+    Checking bytes v1.12.1
+    Checking ensure-cov v0.1.0
+    Checking num-rational v0.4.2
+    Checking arrayvec v0.7.8
+    Checking ucd-trie v0.1.7
+    Checking itertools v0.12.1
+    Checking pretty_assertions v1.4.1
+    Checking pest v2.9.5
+    Checking thread_local v1.1.10
+    Checking md5 v0.7.0
+    Checking num v0.4.3
+    Checking memmap2 v0.9.12
+    Checking fs2 v0.4.3
+    Checking serde v1.0.229
+    Checking serde_json v1.0.154
+    Checking log v0.4.35
+    Checking sanakirja-core v1.4.1
+    Checking anyhow v1.0.104
+    Checking smallvec v1.16.4
+    Checking heapless v0.7.17
+    Checking im v15.1.0
+    Checking parking_lot_core v0.9.12
+    Checking loro-rle v1.6.0 (/home/agent/Gits/Redelkasten/worktrees/loro-page-reclamation/crates/rle)
+    Checking parking_lot_core v0.8.6
+    Checking parking_lot v0.12.5
+    Checking parking_lot v0.11.2
+    Checking sanakirja v1.4.3
+    Checking postcard v1.1.3
+    Checking serde_columnar v0.3.14
+    Checking generic-btree v0.10.7 (/home/agent/Gits/Redelkasten/worktrees/loro-page-reclamation/crates/generic-btree)
+    Checking loro-common v1.16.0 (/home/agent/Gits/Redelkasten/worktrees/loro-page-reclamation/crates/loro-common)
+warning: unused import: `logging::log::*`
+  --> /home/agent/Gits/Redelkasten/worktrees/loro-page-reclamation/crates/loro-common/src/lib.rs:21:9
+   |
+21 | pub use logging::log::*;
+   |         ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+    Checking loro-delta v1.13.0 (/home/agent/Gits/Redelkasten/worktrees/loro-page-reclamation/crates/delta)
+warning: `loro-common` (lib) generated 1 warning (run `cargo fix --lib -p loro-common` to apply 1 suggestion)
+    Checking ppv-lite86 v0.2.21
+    Checking ahash v0.8.12
+    Checking quick_cache v0.6.24
+    Checking rand_chacha v0.3.1
+    Checking rand v0.8.8
+    Checking loro-kv-store v1.16.0 (/home/agent/Gits/Redelkasten/worktrees/loro-page-reclamation/crates/kv-store)
+    Checking loro_fractional_index v1.13.0 (/home/agent/Gits/Redelkasten/worktrees/loro-page-reclamation/crates/fractional_index)
+    Checking loro-internal v1.16.2 (/home/agent/Gits/Redelkasten/worktrees/loro-page-reclamation/crates/loro-internal)
+warning: method `as_str` is never used
+    --> /home/agent/Gits/Redelkasten/worktrees/loro-page-reclamation/crates/loro-internal/src/container/richtext/richtext_state.rs:1011:12
+     |
+ 998 | impl RichtextStateChunk {
+     | ----------------------- method in this implementation
+...
+1011 |     pub fn as_str(&self) -> Option<std::borrow::Cow<'_, str>> {
+     |            ^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `as_str` and `unicode_slice` are never used
+   --> /home/agent/Gits/Redelkasten/worktrees/loro-page-reclamation/crates/loro-internal/src/container/richtext/richtext_state.rs:380:16
+    |
+338 |     impl TextChunk {
+    |     -------------- methods in this implementation
+...
+380 |         pub fn as_str(&self) -> std::borrow::Cow<'_, str> {
+    |                ^^^^^^
+...
+530 |         pub fn unicode_slice(
+    |                ^^^^^^^^^^^^^
+
+warning: type does not implement `std::fmt::Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+  --> /home/agent/Gits/Redelkasten/worktrees/loro-page-reclamation/crates/loro-internal/src/encoding/native_value_visitor.rs:33:1
+   |
+33 | / pub enum JsonNativeValueMut<'a> {
+34 | |     Value(&'a mut LoroValue),
+35 | |     Float(&'a mut f64),
+36 | | }
+   | |_^
+   |
+note: the lint level is defined here
+  --> /home/agent/Gits/Redelkasten/worktrees/loro-page-reclamation/crates/loro-internal/src/lib.rs:13:9
+   |
+13 | #![warn(missing_debug_implementations)]
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `loro-internal` (lib) generated 3 warnings
+    Checking loro v1.16.2 (/home/agent/Gits/Redelkasten/worktrees/loro-page-reclamation/crates/loro)
+    Checking immutable-page-lease v0.1.0 (/home/agent/Gits/Redelkasten/worktrees/loro-page-reclamation/experiments/immutable-page-lease)
+    Finished `dev` profile [optimized] target(s) in 11.34s

@@ -137,3 +137,18 @@ See [the experiment and architectural gates](../../context/page-reclamation-expe
 for measurements, retained-history limits, required durable root/ID policy and
 unverified crash boundaries. Allocator reuse does not shrink the file or return
 filesystem blocks.
+
+## Durable roots and identities model (2026-11-10)
+
+A second private test-only controller in `src/rooted_reclamation.rs` persists
+versioned root/dependency manifests, permanent identity high-water marks and root
+retirement tombstones. Unread lazy-root pins and byte leases both prevent reuse.
+Four separate processes verify shared-dependency retention and root retirement;
+a physical-reuse test rejects the stale descriptors accepted by the original
+unprotected probe. A lost-success-acknowledgment test verifies fail-stop/reopen
+behavior after actual successful commits, not engine I/O failure or crash safety.
+
+Run `bash experiments/immutable-page-lease/reproduce-rooted-reclamation.sh`.
+See [the durable-root model](../../context/rooted-reclamation-model.md) for the
+protocol, evidence and limitations. Its roots are synthetic; automatic Loro root
+discovery, production APIs, metadata GC and crash qualification remain unimplemented.

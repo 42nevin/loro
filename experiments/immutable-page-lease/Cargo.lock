@@ -470,6 +470,7 @@ dependencies = [
  "loro",
  "sanakirja",
  "serde",
+ "serde_json",
  "tempfile",
 ]
 

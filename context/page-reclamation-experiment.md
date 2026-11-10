@@ -177,3 +177,14 @@ including eleven reclamation tests. Existing dependency warnings are separate
 from test results. Clippy and rustfmt were unavailable in the resumed 1.97.1
 installation; neither is claimed as passed. No workspace-wide matrix or crash
 fault campaign was run.
+
+## Follow-on durable-root model
+
+The next test-only controller implements versioned dependency manifests,
+permanently increasing identity allocation and lazy-root pins. It prevents the
+above ABA witness under its exclusive controller contract and tests actual
+fresh-process shared-root retirement. See [rooted-reclamation-model.md](rooted-reclamation-model.md).
+The original unprotected ABA characterization remains intentionally reproducible;
+production Store APIs and opaque-schema retention are unchanged. The 29-test
+counts and source hashes above describe checkpoint `9707c5b8`; newer full runs
+also include the follow-on tests and have separately recorded evidence.

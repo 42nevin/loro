@@ -164,3 +164,5 @@ linked issues or traces when relevant.
 - Latest-state VV lookup and original-DAG regression evidence: [context/current-state-vv-shortcut.md](context/current-state-vv-shortcut.md).
 - Test-only whole-page reclamation, branch/lease pins, opaque-root refusal and the
   reproduced descriptor-identity ABA hazard: [context/page-reclamation-experiment.md](context/page-reclamation-experiment.md).
+- Test-only durable root/dependency manifests, issued-ID high-water marks, lazy
+  root pins and fresh-process retention tests: [context/rooted-reclamation-model.md](context/rooted-reclamation-model.md).

@@ -550,3 +550,7 @@ mod packed;
 #[cfg(test)]
 #[path = "reclamation_probe.rs"]
 mod reclamation_probe;
+
+#[cfg(test)]
+#[path = "rooted_reclamation.rs"]
+mod rooted_reclamation;
