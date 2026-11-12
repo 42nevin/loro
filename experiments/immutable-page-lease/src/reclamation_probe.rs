@@ -24,6 +24,7 @@ pub(super) fn sweep_with_manifest(
     retained: &BTreeSet<u64>,
     manifest_sequence: Option<u64>,
 ) -> Result<Sweep> {
+    store.require_healthy()?;
     // The exclusive Store borrow excludes concurrent bind/insert. Outstanding
     // BytesSlice clones can only keep an existing segment alive or release it.
     // Weak entries are never upgraded while holding this mutex (Drop relocks).
@@ -34,7 +35,7 @@ pub(super) fn sweep_with_manifest(
     {
         // Validate every refusal before mut_txn_begin, which copies root bytes.
         let txn = sanakirja::Env::txn_begin(&store.owner.env)?;
-        for root in [1, 3, 4] {
+        for root in [1, 3, 4, 7] {
             ensure!(txn.root_db::<u64,u64,sanakirja::btree::page::Page<u64,u64>>(root).is_none(),
                 "probe refuses opaque published or derived records");
         }
@@ -429,31 +430,16 @@ fn opaque_public_objects_and_heads_each_refuse_after_fresh_reopen() {
 }
 
 #[test]
-fn characterization_retired_identity_reuse_can_reauthenticate_stale_descriptor() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("data");
-    let mut store = unsafe { Store::open(&path).unwrap() };
-    let mut seen = BTreeMap::<u64, (Descriptor, u8)>::new();
-    // Intentional counterexample, not a supported lifetime: a bare Descriptor
-    // is not a lease or a registered root. The allocator only rejects IDs still
-    // in root 0. With reclamation bolted on, old IDs can name different bytes.
-    for generation in 0..64u8 {
-        let fill = b'!' + generation;
-        let (descriptor, bytes) = store.insert_bound(7, 256, &mut |out| out.fill(fill)).unwrap();
-        if let Some((stale, original)) = seen.get(&descriptor.page) {
-            assert_eq!(stale, &descriptor);
-            assert_ne!(*original, fill);
-            assert_eq!(&*store.bind(stale).unwrap(), vec![fill; 256]);
-            println!("MEASUREMENT {{\"scenario\":\"retired_id_aba_counterexample\",\"generation\":{generation},\"stale_descriptor_accepted_different_bytes\":true,\"production_gc_safe\":false}}");
-            return;
-        }
-        seen.insert(descriptor.page, (descriptor, fill));
-        drop(bytes);
-        let swept = sweep_unpublished(&mut store, &BTreeSet::new()).unwrap();
-        assert_eq!(swept.retired_ids, BTreeSet::from([7]));
-        assert!(store.get(7).is_err());
-    }
-    panic!("pinned allocator did not reproduce descriptor ABA within 64 generations");
+fn retired_identity_cannot_be_reissued_under_v3_commitments() {
+    let dir=tempfile::tempdir().unwrap();let path=dir.path().join("data");
+    let mut store=unsafe{Store::open(&path).unwrap()};
+    let (descriptor,bytes)=store.insert_bound(7,256,&mut |out|out.fill(b'a')).unwrap();
+    let commitment=store.commitment(&descriptor).unwrap();drop(bytes);
+    assert_eq!(sweep_unpublished(&mut store,&BTreeSet::new()).unwrap().retired_ids,BTreeSet::from([7]));
+    assert!(store.insert_bound(7,256,&mut |out|out.fill(b'b')).is_err());
+    assert!(store.bind_committed(&commitment).is_err());drop(store);
+    let mut store=unsafe{Store::open(&path).unwrap()};
+    assert!(store.insert_bound(7,256,&mut |out|out.fill(b'b')).is_err());
 }
 
 #[test]

@@ -1,6 +1,6 @@
 //! S-direct qualification storage. See store module for the ownership contract.
 mod store;
-pub use store::{Store,Descriptor,Metrics};
+pub use store::{Store,Descriptor,Commitment,Metrics};
 use append_only_bytes::BytesSlice;
 const PAGE:usize=4096;
 pub struct Allocator<'a> {

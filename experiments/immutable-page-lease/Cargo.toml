@@ -11,11 +11,11 @@ sanakirja = "=1.4.3"
 anyhow = "1"
 fs2 = "0.4"
 libc = "0.2"
+blake3 = "=1.8.7"
 serde = { version = "1", features = ["derive"] }
 [dev-dependencies]
 tempfile = "3"
 serde_json = "1"
-blake3 = "=1.8.7"
 [patch.crates-io]
 append-only-bytes = { path = "../../crates/append-only-bytes" }
 generic-btree = { path = "../../crates/generic-btree" }

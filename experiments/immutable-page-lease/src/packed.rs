@@ -1,4 +1,4 @@
-//! Format-v2 packed immutable extents. A batch is sealed as a whole; later
+//! Format-v3 packed immutable extents. A batch is sealed as a whole; later
 //! batches never append to its unused tail. There is no old-format migration.
 use super::*;
 
@@ -13,6 +13,7 @@ impl Store {
         entries: &[(u64, usize)],
         generate: &mut dyn FnMut(usize, &mut [u8]),
     ) -> Result<Vec<(Descriptor, BytesSlice)>> {
+        self.require_healthy()?;
         if entries.is_empty() { return Ok(Vec::new()); }
         let mut ids = std::collections::BTreeSet::new();
         for &(id, len) in entries {
@@ -24,8 +25,13 @@ impl Store {
             Some(db) => db,
             None => unsafe { sanakirja::btree::create_db(&mut txn)? },
         };
+        let mut commitments: sanakirja::btree::Db<CommitmentKey,u64> = match txn.root_db(6) {
+            Some(db) => db,
+            None => unsafe { sanakirja::btree::create_db(&mut txn)? },
+        };
         // Reject existing identities before invoking any generator.
         for &(id, _) in entries {
+            ensure!(sanakirja::btree::get(&txn,&commitments,&CommitmentKey(id,0),None)?.is_none_or(|(key,_)|*key!=CommitmentKey(id,0)), "extent identity was already issued");
             ensure!(sanakirja::btree::get(&txn,&db,&id,None)?.is_none_or(|(key,_)|*key!=id), "duplicate extent identity");
         }
         let mut current = None;
@@ -51,6 +57,13 @@ impl Store {
             let offset = used + HEADER;
             generate(index,&mut raw[offset..offset+len]);
             std::str::from_utf8(&raw[offset..offset+len])?;
+            let hash = blake3::hash(&raw[offset..offset+len]);
+            for field in 0..5u64 {
+                let value = if field == 0 { len as u64 } else {
+                    u64::from_le_bytes(hash.as_bytes()[(field as usize-1)*8..field as usize*8].try_into()?)
+                };
+                sanakirja::btree::put(&mut txn,&mut commitments,&CommitmentKey(id,field),&value)?;
+            }
             let ptr = NonNull::new(raw[offset..].as_mut_ptr()).unwrap();
             let descriptor = Descriptor {store_id:self.store_id,id,page,offset,len};
             let location = page.checked_add(used as u64).ok_or_else(||anyhow::anyhow!("extent location overflow"))?;
@@ -59,7 +72,8 @@ impl Store {
             used = offset + len;
         }
         txn.set_root(0,db.db.into());
-        txn.commit()?;
+        txn.set_root(6,commitments.db.into());
+        self.commit_result(txn.commit())?;
         self.owner.counts.private.fetch_add(1,Ordering::SeqCst);
         // Keep each extent's own identity and lease, even when pages are shared.
         Ok(sealed.into_iter().map(|(descriptor,ptr)| {
@@ -78,7 +92,7 @@ impl Store {
 mod tests {
     use super::*;
     #[test]
-    fn pre_v2_store_is_refused_without_rewriting_bytes() {
+    fn v2_store_is_refused_without_rewriting_bytes() {
         let dir=tempfile::tempdir().unwrap();let path=dir.path().join("old");
         {
             let env=sanakirja::Env::new(&path,(64*PAGE) as u64,2).unwrap();
@@ -86,11 +100,13 @@ mod tests {
             let mut db=unsafe{sanakirja::btree::create_db::<_,u64,u64>(&mut txn).unwrap()};
             sanakirja::btree::put(&mut txn,&mut db,&0,&42).unwrap();
             sanakirja::btree::put(&mut txn,&mut db,&1,&43).unwrap();
+            sanakirja::btree::put(&mut txn,&mut db,&PAYLOAD_SCHEMA_KEY,&2).unwrap();
+            sanakirja::btree::put(&mut txn,&mut db,&PAYLOAD_SCHEMA_MAGIC_KEY,&0x5041434b45445632).unwrap();
             txn.set_root(2,db.db.into());txn.commit().unwrap();
         }
         let before=std::fs::read(&path).unwrap();
-        let err=unsafe{Store::open(&path)}.err().expect("v1 without payload marker is rejected");
-        assert!(err.to_string().contains("requires v2"));
+        let err=unsafe{Store::open(&path)}.err().expect("v2 marker is rejected");
+        assert!(err.to_string().contains("requires v3"));
         assert_eq!(before,std::fs::read(&path).unwrap());
     }
     #[test]

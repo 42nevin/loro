@@ -168,3 +168,6 @@ linked issues or traces when relevant.
   root pins and fresh-process retention tests: [context/rooted-reclamation-model.md](context/rooted-reclamation-model.md).
 - Actual Loro capture/TrustedHistorySource page-reclamation integration, full-history
   obligations and fresh-process evidence: [context/loro-history-reclamation-integration.md](context/loro-history-reclamation-integration.md).
+
+- Live immutable extent relocation, stable commitments, retired-owner exclusion and
+  transaction-boundary simulations: [context/live-extent-relocation.md](context/live-extent-relocation.md).

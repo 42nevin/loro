@@ -11,6 +11,7 @@ const HEAD_MAGIC:u64=0x4452564448454431;
 impl Store {
     /// Initialize only before any canonical record or payload allocation.
     pub fn init_derived_v1(&mut self)->Result<()> {
+        self.require_healthy()?;
         {
             let txn=sanakirja::Env::txn_begin(&self.owner.env)?;
             ensure!(txn.root_db::<u64,u64,sanakirja::btree::page::Page<u64,u64>>(0).is_none(),"derived schema requires pristine payload store");
@@ -22,7 +23,7 @@ impl Store {
         let mut db=txn.root_db::<u64,u64,sanakirja::btree::page::Page<u64,u64>>(2).ok_or_else(||anyhow::anyhow!("missing identity"))?;
         sanakirja::btree::put(&mut txn,&mut db,&SCHEMA_KEY,&1)?;
         sanakirja::btree::put(&mut txn,&mut db,&SCHEMA_MAGIC_KEY,&SCHEMA_MAGIC)?;
-        txn.set_root(2,db.db.into());txn.commit()?;Ok(())
+        txn.set_root(2,db.db.into());self.commit_result(txn.commit())?;Ok(())
     }
     /// Absence is distinct from malformed or unsupported derived schema.
     /// Reads identity metadata only and never initializes an existing store.

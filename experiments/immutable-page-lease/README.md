@@ -13,18 +13,22 @@ owner. The owner retains `Arc<Env>` and the payload address. No database read or
 write transaction remains open in the owner. Native Loro retains that owner in
 its arena, operation and rich-text structures.
 
-The wrapper never mutates a committed payload and never passes its page to
-`decr_rc`, `free_page`, or another reclamation path. Page offsets are stored as
-plain `u64` metadata values, not as automatically reference-counted page objects.
-Metadata B-tree pages can be replaced/reclaimed normally. Payload pages remain
-allocated forever, including orphaned/abandoned ones. This deliberately trades
-space for a simple qualification invariant. It is not a production GC design.
+Payload schema v3 adds immutable content commitments and live relocation.
+`Commitment` is stable across moves; `Descriptor` remains physical diagnostics.
+`relocate` copies into a fresh page and commits its directory switch plus durable
+retirement queue atomically. `reclaim_relocated` reuses only old relocated pages
+with no remaining directory references or live owners, including all generations
+and packed neighbors. Logical IDs, content commitments, journals and derived
+records are never collected. This is not a production history GC design.
+
+See [live extent relocation](../../context/live-extent-relocation.md) for the
+ownership protocol, hard-cut schema and deterministic fault-test limitations.
 
 ## Safety boundary
 
 `Store::open` is unsafe. The caller must exclusively control the file for the
 entire lifetime of **every** derived owner, not merely the Store. No second
-mapping, outside writer, truncation, replacement, deletion, compaction or page
+mapping, outside writer, truncation, replacement, deletion, compaction or external page
 reclamation is permitted. Existing stores must be products of this wrapper.
 Store does not expose its environment or a raw transaction. The tests satisfy
 this boundary using private temporary files and drop all documents and leases

@@ -1,8 +1,12 @@
 //! Single-owner immutable payload pages and atomic public records.
-//! No payload or metadata blob page is reclaimed in this experiment.
+//! Relocated payload pages alone may be reclaimed after directory and lease exclusion.
 use anyhow::{ensure, Result};
 use append_only_bytes::{BytesSlice, ImmutableBytes};
-use sanakirja::{AllocPage, Commit, LoadPage, RootDb};
+use sanakirja::{AllocPage, Commit, LoadPage, RootDb, Storable, UnsizedStorable};
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct CommitmentKey(u64, u64);
+sanakirja::direct_repr!(CommitmentKey);
 use std::{
     collections::BTreeMap,
     fs::{File, OpenOptions},
@@ -10,7 +14,7 @@ use std::{
     path::Path,
     ptr::NonNull,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, Weak,
     },
 };
@@ -19,10 +23,19 @@ const HEADER: usize = 32;
 const MAGIC: u64 = 0x494d4d555441424c;
 const PAYLOAD_SCHEMA_KEY: u64 = 4;
 const PAYLOAD_SCHEMA_MAGIC_KEY: u64 = 5;
-const PAYLOAD_SCHEMA_MAGIC: u64 = 0x5041434b45445632;
-const PAYLOAD_SCHEMA_VERSION: u64 = 2;
+const PAYLOAD_SCHEMA_MAGIC: u64 = 0x5041434b45445633;
+const PAYLOAD_SCHEMA_VERSION: u64 = 3;
 const RECORD_MAGIC: u64 = 0x5344495245435431;
 
+/// Immutable logical content identity, independent of physical placement.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Commitment {
+    pub store_id: [u8; 16],
+    pub id: u64,
+    pub len: usize,
+    pub hash: [u8; 32],
+}
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Descriptor {
@@ -60,6 +73,11 @@ pub struct Store {
     owner: Arc<Owner>,
     store_id: [u8; 16],
     live_segments: Arc<Mutex<BTreeMap<u64, Weak<SealedSegment>>>>,
+    // Retain every retired generation, not just the most recently cached owner.
+    retired_segments: Vec<(u64, Weak<SealedSegment>)>,
+    failed: AtomicBool,
+    #[cfg(test)]
+    relocation_fault: u8,
 }
 struct SealedSegment {
     descriptor: Descriptor,
@@ -84,14 +102,15 @@ impl Drop for SealedSegment {
     }
 }
 // SAFETY: Only newly allocated private pages are mutated; no public API exposes
-// transactions or frees pages. Committed payload pages are never reused. Owner
+// transactions. Payload pages are reused only after directory and ALL lease
+// exclusion, including every retired generation. Owner
 // retains Env's append-only mappings and the file lock throughout all leases.
 // The unsafe open contract excludes noncooperating mutation/truncation/replacement.
 unsafe impl Send for SealedSegment {}
 // SAFETY: Same immutable page and lifetime invariant as Send.
 unsafe impl Sync for SealedSegment {}
 // SAFETY: Pinned Sanakirja 1.4.3 retains old mappings on growth. Page payload is
-// initialized once before commit and is immutable for this owner's whole lifetime.
+// initialized once before commit and is immutable for each lease's whole lifetime.
 unsafe impl ImmutableBytes for SealedSegment {
     fn as_bytes(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
@@ -179,7 +198,7 @@ impl Store {
                 for (key, expected) in [(PAYLOAD_SCHEMA_KEY, PAYLOAD_SCHEMA_VERSION), (PAYLOAD_SCHEMA_MAGIC_KEY, PAYLOAD_SCHEMA_MAGIC)] {
                     let actual = sanakirja::btree::get(&txn, &db, &key, None)?;
                     ensure!(actual.is_some_and(|(found, value)| *found == key && *value == expected),
-                        "unsupported payload schema; requires v2 (no migration)");
+                        "unsupported payload schema; requires v3 (no migration)");
                 }
                 Some(id)
             } else { None }
@@ -200,7 +219,10 @@ impl Store {
             txn.commit()?;
             id
         };
-        Ok(Self { owner, store_id, live_segments: Arc::new(Mutex::new(BTreeMap::new())) })
+        Ok(Self { owner, store_id, live_segments: Arc::new(Mutex::new(BTreeMap::new())),
+            retired_segments: Vec::new(), failed: AtomicBool::new(false),
+            #[cfg(test)] relocation_fault: 0,
+        })
     }
     pub fn store_id(&self) -> [u8; 16] {
         self.store_id
@@ -234,6 +256,7 @@ impl Store {
         Ok(self.insert_bound(id, len, generate)?.1)
     }
     fn resolve(&self, id: u64) -> Result<(Descriptor, BytesSlice)> {
+        self.require_healthy()?;
         // Drop the cache lock before any strong lease can be dropped: its Drop
         // removes the weak entry. Disk resolution remains mandatory on a miss.
         let cached = self.live_segments.lock().unwrap().get(&id).and_then(Weak::upgrade);
@@ -260,6 +283,8 @@ impl Store {
         ensure!(len > 0 && len <= PAGE - payload_offset, "invalid payload length");
         ensure!(u64::from_le_bytes(raw[slot+24..slot+32].try_into()?) == id, "extent identity mismatch");
         std::str::from_utf8(&raw[payload_offset..payload_offset + len])?;
+        let committed = self.read_commitment(id)?;
+        ensure!(committed.len == len && committed.hash == *blake3::hash(&raw[payload_offset..payload_offset + len]).as_bytes(), "payload commitment mismatch");
         let descriptor = Descriptor { store_id: self.store_id, id, page: page_offset, offset: payload_offset, len };
         let ptr = NonNull::new(raw[payload_offset..].as_ptr().cast_mut()).unwrap();
         drop(txn);
@@ -314,6 +339,7 @@ impl Store {
         self.publish_record(1,RECORD_MAGIC,record_id,metadata)
     }
     fn publish_record(&mut self,root:usize,magic:u64,record_id:u64,metadata:&[u8])->Result<()> {
+        self.require_healthy()?;
         ensure!(metadata.len()<=1024*1024*1024,"record exceeds experiment limit");
         let mut txn = sanakirja::Env::mut_txn_begin(&self.owner.env)?;
         let mut db: sanakirja::btree::Db<u64, u64> = match txn.root_db(root) {
@@ -350,7 +376,7 @@ impl Store {
         }
         sanakirja::btree::put(&mut txn, &mut db, &record_id, &pages[0].0.offset)?;
         txn.set_root(root, db.db.into());
-        txn.commit()?;
+        self.commit_result(txn.commit())?;
         self.owner.counts.public.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -554,3 +580,6 @@ mod reclamation_probe;
 #[cfg(test)]
 #[path = "rooted_reclamation.rs"]
 mod rooted_reclamation;
+
+#[path="relocation.rs"]
+mod relocation;
